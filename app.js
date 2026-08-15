@@ -30,10 +30,11 @@ const MAX_R     = 3;      // 백킹스토어 배율 상한
 const ZOOM_MIN  = 0.4;
 const ZOOM_MAX  = 2.5;
 
-const PEN_BASE  = 2.4;    // 펜 기준 두께 (필압 1.0 기준)
-const HI_BASE   = 16;     // 형광펜 두께
+const PEN_BASE  = 5.0;    // 펜 기준 두께 (필압 1.0 기준)
+const PEN_SIZES = [0.85, 1.3, 2.1];   // 가늘게 / 보통 / 굵게
+const HI_BASE   = 17;     // 형광펜 두께
 const HI_ALPHA  = 0.32;
-const ERASE_R   = 11;     // 지우개 반경 (페이지 좌표)
+const ERASE_R   = 13;     // 지우개 반경 (페이지 좌표)
 
 const PEN_COLORS = ['#1c1c1e', '#d1372e', '#2f6fd0', '#1f9254', '#b45309'];
 const HI_COLORS  = ['#ffd84d', '#8ce99a', '#ffa8d2', '#8fd6ff', '#c9b6ff'];
@@ -48,7 +49,7 @@ const state = {
   tool:     'pen',
   penColor: PEN_COLORS[0],
   hiColor:  HI_COLORS[0],
-  sizeMul:  1,
+  sizeMul:  PEN_SIZES[1],
   zoom:     1,
   pageH:    0,
 };
@@ -186,13 +187,31 @@ function relayout() {
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
+// 화면의 한 점을 붙잡은 채 배율만 바꿉니다. 타일은 건드리지 않으므로 핀치
+// 도중에도 부드럽습니다. 손을 떼면 relayout() 이 해상도를 다시 맞춥니다.
+function applyZoomVisual(z, cx, cy) {
+  const rect = el.page.getBoundingClientRect();
+  const s0 = rect.width / PAGE_W;
+  const px = (cx - rect.left) / s0;      // 붙잡을 지점의 페이지 좌표
+  const py = (cy - rect.top) / s0;
+
+  state.zoom = z;
+  el.page.style.transform = `scale(${z})`;
+  el.canvasWrap.style.width  = Math.round(PAGE_W * z) + 'px';
+  el.canvasWrap.style.height = Math.round(state.pageH * z) + 'px';
+  el.btnZoomFit.textContent = Math.round(z * 100) + '%';
+
+  const sr = el.scroller.getBoundingClientRect();
+  el.scroller.scrollLeft = px * z + el.canvasWrap.offsetLeft - (cx - sr.left);
+  el.scroller.scrollTop  = py * z + el.canvasWrap.offsetTop  - (cy - sr.top);
+}
+
 function setZoom(z) {
   z = clamp(z, ZOOM_MIN, ZOOM_MAX);
   if (Math.abs(z - state.zoom) < 0.001) return;
-  const cy = (el.scroller.scrollTop + el.scroller.clientHeight / 2) / state.zoom; // 화면 중앙의 페이지 좌표
-  state.zoom = z;
+  const sr = el.scroller.getBoundingClientRect();
+  applyZoomVisual(z, sr.left + sr.width / 2, sr.top + sr.height / 2);
   relayout();
-  el.scroller.scrollTop = cy * z - el.scroller.clientHeight / 2;
   updatePageRect();
 }
 
@@ -377,8 +396,8 @@ function drawStroke(ctx, s) {
   ctx.stroke();
 }
 
-// 필압 → 두께. 0.35 를 바닥에 깔아 가볍게 스쳐도 선이 끊기지 않게 합니다.
-const widthAt = (s, pr) => s.w * (0.35 + 0.65 * clamp(pr, 0, 1));
+// 필압 → 두께. 절반을 바닥에 깔아, 가볍게 스쳐도 선이 실처럼 가늘어지지 않습니다.
+const widthAt = (s, pr) => s.w * (0.5 + 0.5 * clamp(pr, 0, 1));
 
 // 그리는 중에는 방금 들어온 조각만 덧그립니다 (전체 재렌더 없이).
 function drawLastSegment(s) {
@@ -545,18 +564,54 @@ function forceOf(t) {
   return clamp(max > 0 ? f / max : f, 0.02, 1);
 }
 
+// 손가락 두 개: 벌리면 확대, 움직이지 않고 톡 치면 펜↔지우개.
+// (애플펜슬 더블탭은 UIPencilInteraction 으로만 오고 웹에는 전달되지 않습니다.)
+let pinch = null;
+
+const fingersOf = e => Array.prototype.filter.call(e.touches, t => !isStylus(t));
+const distOf = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+const TAP_SLOP = 12, TAP_MS = 320;
+
 el.scroller.addEventListener('touchstart', e => {
   sawTouch = true;
-  if (!state.doc || active || eraseSession) return;
-  for (const t of e.changedTouches) {
-    if (!isStylus(t)) continue;
-    e.preventDefault();                   // 펜일 때만 스크롤을 막습니다
-    beginInput(t.identifier, t.clientX, t.clientY, forceOf(t));
-    return;
+  if (!state.doc) return;
+
+  if (!pinch && !active && !eraseSession) {
+    for (const t of e.changedTouches) {
+      if (!isStylus(t)) continue;
+      e.preventDefault();                 // 펜일 때만 스크롤을 막습니다
+      beginInput(t.identifier, t.clientX, t.clientY, forceOf(t));
+      return;
+    }
+  }
+
+  const f = fingersOf(e);
+  if (f.length === 2 && activeId === null) {
+    e.preventDefault();
+    pinch = {
+      d0: distOf(f[0], f[1]),
+      z0: state.zoom,
+      cx: (f[0].clientX + f[1].clientX) / 2,
+      cy: (f[0].clientY + f[1].clientY) / 2,
+      moved: false,
+      t0: performance.now(),
+    };
   }
 }, { passive: false });
 
 el.scroller.addEventListener('touchmove', e => {
+  if (pinch) {
+    const f = fingersOf(e);
+    if (f.length < 2) return;
+    e.preventDefault();
+    const d = distOf(f[0], f[1]);
+    if (!pinch.moved && Math.abs(d - pinch.d0) > TAP_SLOP) pinch.moved = true;
+    if (pinch.moved && pinch.d0 > 0) {
+      applyZoomVisual(clamp(pinch.z0 * (d / pinch.d0), ZOOM_MIN, ZOOM_MAX), pinch.cx, pinch.cy);
+    }
+    return;
+  }
+
   if (activeId === null || activeId === 'mouse') return;
   for (const t of e.changedTouches) {
     if (t.identifier !== activeId) continue;
@@ -567,6 +622,14 @@ el.scroller.addEventListener('touchmove', e => {
 }, { passive: false });
 
 function onTouchEnd(e) {
+  if (pinch && fingersOf(e).length < 2) {
+    const tapped = !pinch.moved && (performance.now() - pinch.t0) < TAP_MS;
+    pinch = null;
+    if (tapped) toggleEraser();
+    else { relayout(); updatePageRect(); }   // 새 배율에 맞춰 잉크 해상도를 다시 잡습니다
+    return;
+  }
+
   if (activeId === null || activeId === 'mouse') return;
   for (const t of e.changedTouches) {
     if (t.identifier !== activeId) continue;
@@ -576,6 +639,10 @@ function onTouchEnd(e) {
 }
 el.scroller.addEventListener('touchend', onTouchEnd);
 el.scroller.addEventListener('touchcancel', onTouchEnd);
+
+// Safari 가 페이지 전체를 확대해버리지 않도록 막습니다
+['gesturestart', 'gesturechange', 'gestureend'].forEach(t =>
+  document.addEventListener(t, e => e.preventDefault(), { passive: false }));
 
 // ── 마우스 (PC 에서 확인할 때만) ────────────────────────────────────────
 
@@ -931,10 +998,20 @@ function buildSwatches() {
   }
 }
 
+let lastDrawTool = 'pen';
+
 function setTool(t) {
+  if (t !== 'eraser') lastDrawTool = t;
   state.tool = t;
   el.toolGroup.querySelectorAll('.tool').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   buildSwatches();
+}
+
+// 두 손가락 탭으로 부르는 토글. 지우개에서 돌아올 때는 직전에 쓰던 펜으로 갑니다.
+function toggleEraser() {
+  const next = state.tool === 'eraser' ? lastDrawTool : 'eraser';
+  setTool(next);
+  toast({ eraser: '지우개', hi: '형광펜', pen: '펜' }[next]);
 }
 
 el.toolGroup.querySelectorAll('.tool').forEach(b => {
