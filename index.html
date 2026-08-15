@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>md pencil</title>
+
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="md pencil">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16161a" media="(prefers-color-scheme: dark)">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <header id="toolbar">
+    <button id="btnLibrary" class="tb-btn" title="문서">
+      <svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v5h5"/></svg>
+    </button>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group" id="toolGroup">
+      <button class="tb-btn tool" data-tool="pen" title="펜">
+        <svg viewBox="0 0 24 24"><path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19l-4 1z"/></svg>
+      </button>
+      <button class="tb-btn tool" data-tool="hi" title="형광펜">
+        <svg viewBox="0 0 24 24"><path d="M6 15l6-9 5 3-6 9H6z"/><path d="M4 20h9"/></svg>
+      </button>
+      <button class="tb-btn tool" data-tool="eraser" title="지우개">
+        <svg viewBox="0 0 24 24"><path d="M8 19l-4-4a1.5 1.5 0 0 1 0-2.1l8-8a1.5 1.5 0 0 1 2.1 0l5 5a1.5 1.5 0 0 1 0 2.1L14 19H8z"/><path d="M8.5 9.5l6 6"/></svg>
+      </button>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group swatches" id="swatches"></div>
+
+    <div class="tb-group sizes" id="sizes">
+      <button class="tb-btn size" data-size="0.6" title="가늘게"><i style="width:4px;height:4px"></i></button>
+      <button class="tb-btn size" data-size="1" title="보통"><i style="width:8px;height:8px"></i></button>
+      <button class="tb-btn size" data-size="1.8" title="굵게"><i style="width:13px;height:13px"></i></button>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <div class="tb-group">
+      <button id="btnUndo" class="tb-btn" title="되돌리기" disabled>
+        <svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+      </button>
+      <button id="btnRedo" class="tb-btn" title="다시" disabled>
+        <svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>
+      </button>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group zoom">
+      <button id="btnZoomOut" class="tb-btn" title="축소">
+        <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+      </button>
+      <button id="btnZoomFit" class="tb-btn zoom-label" title="폭 맞춤">100%</button>
+      <button id="btnZoomIn" class="tb-btn" title="확대">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="scroller">
+    <div id="canvasWrap">
+      <div id="page">
+        <article id="doc"></article>
+        <div id="ink"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="empty" class="empty">
+    <div class="empty-inner">
+      <h1>md pencil</h1>
+      <p>마크다운을 읽고 애플펜슬로 그 위에 필기합니다.<br>손가락으로는 스크롤, 펜으로는 그리기.</p>
+      <div class="empty-actions">
+        <button class="btn primary" id="emptyOpen">문서 넣기</button>
+      </div>
+      <ul id="emptyRecent" class="empty-recent"></ul>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ─────────── 문서 시트 ─────────── -->
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-head">
+      <h2>문서</h2>
+      <button class="btn ghost" data-close>닫기</button>
+    </div>
+
+    <div class="sheet-body">
+      <div class="tabs" id="tabs">
+        <button class="tab" data-tab="recent">최근</button>
+        <button class="tab" data-tab="file">파일</button>
+        <button class="tab" data-tab="paste">붙여넣기</button>
+        <button class="tab" data-tab="url">주소</button>
+      </div>
+
+      <section class="tabpane" data-pane="recent">
+        <ul id="recentList" class="recent-list"></ul>
+        <p class="hint" id="recentEmpty" hidden>아직 저장된 문서가 없습니다.</p>
+      </section>
+
+      <section class="tabpane" data-pane="file" hidden>
+        <p class="hint">아이패드 파일 앱, iCloud Drive, 다운로드 폴더 어디서든 <code>.md</code> 파일을 고르면 됩니다.</p>
+        <label class="filedrop" id="filedrop">
+          <input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple hidden>
+          <span>탭해서 파일 선택</span>
+          <small>여러 개를 한 번에 넣어도 됩니다</small>
+        </label>
+      </section>
+
+      <section class="tabpane" data-pane="paste" hidden>
+        <p class="hint">마크다운 원문을 그대로 붙여넣으세요.</p>
+        <input type="text" id="pasteName" class="field" placeholder="문서 이름 (비워도 됩니다)">
+        <textarea id="pasteArea" class="field area" placeholder="# 제목&#10;&#10;내용..."></textarea>
+        <button class="btn primary" id="pasteGo">넣기</button>
+      </section>
+
+      <section class="tabpane" data-pane="url" hidden>
+        <p class="hint">GitHub 파일 주소를 그대로 붙여넣어도 됩니다. raw 주소로 알아서 바꿉니다.</p>
+        <input type="url" id="urlInput" class="field" placeholder="https://github.com/사용자/저장소/blob/main/README.md">
+        <button class="btn primary" id="urlGo">가져오기</button>
+        <p class="hint err" id="urlErr" hidden></p>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="lib/markdown-it.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
