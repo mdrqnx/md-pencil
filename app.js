@@ -670,19 +670,42 @@ async function addDoc(name, md, { open = true } = {}) {
   return doc;
 }
 
-const stripExt = n => n.replace(/\.(md|markdown|txt)$/i, '');
+const TEXT_EXT = /\.(md|markdown|mdown|mkd|mdx|txt|text)$/i;
+const stripExt = n => n.replace(TEXT_EXT, '');
+
+const readText = f => (f.text ? f.text() : new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload  = () => res(r.result);
+  r.onerror = () => rej(r.error || new Error('읽기 실패'));
+  r.readAsText(f);
+}));
 
 async function readFiles(fileList) {
-  const files = Array.from(fileList).filter(f => /\.(md|markdown|txt)$/i.test(f.name) || f.type.startsWith('text/'));
-  if (!files.length) { toast('마크다운 파일이 아닙니다'); return; }
-  let last = null;
-  for (const f of files) {
-    const md = await f.text();
-    last = await addDoc(stripExt(f.name), md, { open: false });
+  const all = Array.from(fileList || []);
+  if (!all.length) return;
+
+  const files = all.filter(f => TEXT_EXT.test(f.name || '') || /^text\//.test(f.type || ''));
+  if (!files.length) {
+    toast(`읽을 수 없는 형식입니다: ${all[0].name || '이름 없는 파일'}`);
+    return;
   }
+
+  let last = null, failed = 0;
+  for (const f of files) {
+    try {
+      const md = await readText(f);
+      last = await addDoc(stripExt(f.name), md, { open: false });
+    } catch (e) {
+      failed++;
+      console.warn('파일을 읽지 못했습니다:', f.name, e);
+    }
+  }
+
+  if (!last) { toast(`파일을 읽지 못했습니다 (${failed}개 실패)`); return; }
+
   closeSheet();
-  if (last) await openDoc(last);
-  if (files.length > 1) toast(files.length + '개를 넣었습니다');
+  await openDoc(last);
+  if (files.length > 1) toast(`${files.length - failed}개를 넣었습니다`);
 }
 
 function toRawUrl(u) {
@@ -964,7 +987,14 @@ el.btnLibrary.addEventListener('click', () => openSheet());
 el.emptyOpen.addEventListener('click', () => openSheet('file'));
 
 el.filedrop.addEventListener('click', () => el.fileInput.click());
-el.fileInput.addEventListener('change', e => { readFiles(e.target.files); e.target.value = ''; });
+
+// value 비우기는 반드시 읽기가 끝난 다음에. 먼저 비우면 iOS 에서 파일 핸들이
+// 무효가 되어 읽는 도중 실패합니다.
+el.fileInput.addEventListener('change', async e => {
+  const files = e.target.files;
+  try { if (files && files.length) await readFiles(files); }
+  finally { e.target.value = ''; }
+});
 
 ['dragenter', 'dragover'].forEach(t => el.filedrop.addEventListener(t, e => {
   e.preventDefault(); el.filedrop.classList.add('over');
@@ -1051,8 +1081,21 @@ const isLocal = location.hostname === 'localhost'
              || /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname);
 
 if ('serviceWorker' in navigator && !isLocal) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+  window.addEventListener('load', async () => {
+    // 이미 제어 중인 워커가 있었다면, 이번에 올라오는 것은 "갱신" 입니다.
+    const hadController = !!navigator.serviceWorker.controller;
+    try {
+      const reg = await navigator.serviceWorker.register('sw.js');
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        if (!sw) return;
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'activated' && hadController) {
+            toast('새 버전이 준비됐습니다. 앱을 다시 열면 적용됩니다');
+          }
+        });
+      });
+    } catch { /* 등록에 실패해도 앱은 그대로 동작합니다 */ }
   });
 } else if ('serviceWorker' in navigator) {
   navigator.serviceWorker.getRegistrations()

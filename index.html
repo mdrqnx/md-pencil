@@ -135,11 +135,12 @@
 
       <section class="tabpane" data-pane="file" hidden>
         <p class="hint">아이패드 파일 앱, iCloud Drive, 다운로드 폴더 어디서든 <code>.md</code> 파일을 고르면 됩니다.</p>
-        <label class="filedrop" id="filedrop">
-          <input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple hidden>
+        <!-- accept 를 걸면 iOS 파일 앱에서 .md 가 회색으로 잠깁니다. 형식은 고른 뒤에 거릅니다. -->
+        <input type="file" id="fileInput" multiple hidden>
+        <div class="filedrop" id="filedrop">
           <span>탭해서 파일 선택</span>
           <small>여러 개를 한 번에 넣어도 됩니다</small>
-        </label>
+        </div>
       </section>
 
       <section class="tabpane" data-pane="paste" hidden>
