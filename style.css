@@ -3,31 +3,39 @@
    레이아웃이 다시 흐르지 않아야 필기 좌표가 어긋나지 않습니다.
    ───────────────────────────────────────────────────────── */
 
+/* 색은 GitHub Primer 를 따릅니다 */
 :root {
-  --bg:        #eceae4;
+  --bg:        #eaeef2;
   --paper:     #ffffff;
-  --ink:       #23221f;
-  --muted:     #6b6862;
-  --line:      #e2ded6;
-  --chrome:    #f7f6f3;
-  --chrome-br: #dcd8d0;
-  --accent:    #2f6fd0;
-  --shadow:    0 1px 3px rgba(0,0,0,.08), 0 8px 28px rgba(0,0,0,.06);
+  --ink:       #1f2328;
+  --muted:     #59636e;
+  --line:      #d1d9e0;
+  --chrome:    #f6f8fa;
+  --chrome-br: #d1d9e0;
+  --accent:    #0969da;
+  --code-bg:   rgba(129,139,152,.2);
+  --pre-bg:    #f6f8fa;
+  --stripe:    #f6f8fa;
+  --shadow:    0 1px 3px rgba(31,35,40,.08), 0 8px 28px rgba(31,35,40,.06);
   --tb-h:      52px;
+  --tb-lead:   60px;   /* 파일 버튼 왼쪽 여백 (버튼 1.5개 폭) */
   --radius:    10px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg:        #0f0f12;
-    --paper:     #1a1a1f;
-    --ink:       #e8e6e1;
-    --muted:     #9b978f;
-    --line:      #2e2e36;
-    --chrome:    #16161a;
-    --chrome-br: #2a2a32;
-    --accent:    #6ba4f8;
-    --shadow:    0 1px 3px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.3);
+    --bg:        #010409;
+    --paper:     #0d1117;
+    --ink:       #e6edf3;
+    --muted:     #9198a1;
+    --line:      #3d444d;
+    --chrome:    #151b23;
+    --chrome-br: #3d444d;
+    --accent:    #4493f8;
+    --code-bg:   rgba(101,108,118,.2);
+    --pre-bg:    #151b23;
+    --stripe:    #151b23;
+    --shadow:    0 1px 3px rgba(0,0,0,.5), 0 8px 28px rgba(0,0,0,.4);
   }
 }
 
@@ -39,8 +47,9 @@ html, body {
   overflow: hidden;
   background: var(--bg);
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
-               "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+               "Noto Sans", Helvetica, Arial, "Malgun Gothic", sans-serif,
+               "Apple Color Emoji", "Segoe UI Emoji";
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
@@ -57,7 +66,8 @@ html, body {
   align-items: center;
   gap: 2px;
   height: calc(var(--tb-h) + env(safe-area-inset-top));
-  padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+  padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0
+           calc(var(--tb-lead) + max(8px, env(safe-area-inset-left)));
   background: var(--chrome);
   border-bottom: 1px solid var(--chrome-br);
   overflow-x: auto;
@@ -160,77 +170,109 @@ html, body {
 }
 
 
-/* ── 마크다운 본문 ──────────────────────────────────────── */
+/* ── 마크다운 본문 (GitHub 스타일) ──────────────────────────
+   GitHub 은 긴 코드와 표를 옆으로 스크롤시키지만, 여기서는 줄바꿈합니다.
+   문서 안에 가로 스크롤이 생기면 스크롤 위치에 따라 그 위의 필기가
+   어긋나기 때문입니다. 그 한 가지만 다르고 나머지는 그대로 따릅니다.
+   ───────────────────────────────────────────────────────── */
 
 #doc {
-  /* 오른쪽 여백은 필기 공간입니다. app.js가 --doc-w 를 넣습니다. */
+  /* 오른쪽 여백은 필기 공간입니다 */
   width: var(--doc-w, 600px);
-  padding: 56px 0 0 56px;
-  font-size: 17px;
-  line-height: 1.75;
+  padding: 52px 0 0 56px;
+  font-size: 16px;
+  line-height: 1.5;
   word-break: keep-all;
   overflow-wrap: break-word;
 }
 
-#doc > *:first-child { margin-top: 0; }
+#doc > *:first-child { margin-top: 0 !important; }
+#doc > *:last-child  { margin-bottom: 0 !important; }
 
 #doc h1, #doc h2, #doc h3, #doc h4, #doc h5, #doc h6 {
-  line-height: 1.35;
-  margin: 1.9em 0 .6em;
-  font-weight: 700;
-  letter-spacing: -.01em;
+  margin: 24px 0 16px;
+  font-weight: 600;
+  line-height: 1.25;
 }
-#doc h1 { font-size: 1.85em; margin-top: 0; }
-#doc h2 { font-size: 1.4em;  padding-bottom: .25em; border-bottom: 1px solid var(--line); }
-#doc h3 { font-size: 1.16em; }
+#doc h1 { font-size: 2em;    padding-bottom: .3em; border-bottom: 1px solid var(--line); }
+#doc h2 { font-size: 1.5em;  padding-bottom: .3em; border-bottom: 1px solid var(--line); }
+#doc h3 { font-size: 1.25em; }
 #doc h4 { font-size: 1em; }
-#doc h5, #doc h6 { font-size: .93em; color: var(--muted); }
+#doc h5 { font-size: .875em; }
+#doc h6 { font-size: .85em; color: var(--muted); }
 
-#doc p, #doc ul, #doc ol, #doc blockquote, #doc pre, #doc table { margin: 0 0 1.1em; }
+#doc p, #doc ul, #doc ol, #doc blockquote, #doc pre, #doc table, #doc dl {
+  margin: 0 0 16px;
+}
 
-#doc ul, #doc ol { padding-left: 1.5em; }
-#doc li { margin: .3em 0; }
-#doc li > ul, #doc li > ol { margin: .3em 0; }
+#doc ul, #doc ol { padding-left: 2em; }
+#doc li + li { margin-top: .25em; }
+#doc li > ul, #doc li > ol { margin: .25em 0 0; }
 
-#doc a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(127,127,127,.35); }
+#doc a { color: var(--accent); text-decoration: none; }
+#doc a:hover { text-decoration: underline; }
 
-#doc strong { font-weight: 700; }
+#doc strong { font-weight: 600; }
 #doc em { font-style: italic; }
 #doc del { color: var(--muted); }
 
 #doc blockquote {
-  padding: .1em 0 .1em 1.1em;
-  border-left: 3px solid var(--line);
+  padding: 0 1em;
+  border-left: .25em solid var(--line);
   color: var(--muted);
 }
+#doc blockquote > :last-child { margin-bottom: 0; }
 
+#doc code, #doc kbd, #doc samp, #doc pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Liberation Mono", monospace;
+}
 #doc code {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: .87em;
-  background: rgba(127,127,127,.13);
-  padding: .15em .38em;
-  border-radius: 5px;
+  padding: .2em .4em;
+  font-size: 85%;
+  background: var(--code-bg);
+  border-radius: 6px;
 }
 #doc pre {
-  background: rgba(127,127,127,.1);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  overflow-x: auto;
-  line-height: 1.55;
+  padding: 16px;
+  font-size: 85%;
+  line-height: 1.45;
+  background: var(--pre-bg);
+  border-radius: 6px;
+  /* GitHub 은 overflow: auto. 여기서는 필기가 어긋나지 않도록 접습니다. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-#doc pre code { background: none; padding: 0; font-size: .85em; }
+#doc pre code { padding: 0; font-size: 100%; background: none; border-radius: 0; }
 
-#doc hr { height: 1px; margin: 2em 0; border: 0; background: var(--line); }
+#doc hr {
+  height: .25em;
+  margin: 24px 0;
+  padding: 0;
+  border: 0;
+  background: var(--line);
+}
 
-#doc table { border-collapse: collapse; width: 100%; font-size: .94em; }
-#doc th, #doc td { padding: .5em .7em; border: 1px solid var(--line); text-align: left; }
-#doc th { background: rgba(127,127,127,.09); font-weight: 600; }
+#doc table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: auto;
+  font-size: .95em;
+}
+#doc th, #doc td {
+  padding: 6px 13px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+#doc th { font-weight: 600; }
+#doc tr:nth-child(2n) { background: var(--stripe); }
+#doc table p { margin: 0; }
 
-#doc img { max-width: 100%; height: auto; border-radius: 6px; }
+#doc img { max-width: 100%; height: auto; background: var(--paper); }
 
-#doc .task-list-item { list-style: none; margin-left: -1.4em; }
-#doc .task-list-item input { margin-right: .5em; }
+#doc .task-list-item { list-style: none; margin-left: -1.6em; }
+#doc .task-list-item input { margin: 0 .35em .25em -.2em; vertical-align: middle; }
 
 
 /* ── 빈 화면 ────────────────────────────────────────────── */

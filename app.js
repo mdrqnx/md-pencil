@@ -25,14 +25,15 @@
 
 const PAGE_W    = 900;    // 페이지 논리 폭. 이 값은 절대 바뀌지 않습니다.
 const TILE_H    = 1024;   // 잉크 타일 하나의 높이 (페이지 좌표)
+const MAX_TILES = 400;    // 안전장치. 40만 px 짜리 문서까지 감당합니다
 const TAIL_H    = 360;    // 문서 끝 아래에 남겨두는 필기 여백
 const MAX_R     = 3;      // 백킹스토어 배율 상한
-const ZOOM_MIN  = 0.4;
-const ZOOM_MAX  = 2.5;
+const ZOOM_MIN  = 0.3;
+const ZOOM_MAX  = 4.0;
 
-const PEN_BASE  = 5.0;    // 펜 기준 두께 (필압 1.0 기준)
-const PEN_SIZES = [0.85, 1.3, 2.1];   // 가늘게 / 보통 / 굵게
-const HI_BASE   = 17;     // 형광펜 두께
+// 가늘게 / 보통 / 굵게. 필압 1.0 일 때의 두께입니다.
+const PEN_SIZES = [2, 4, 6];
+const HI_SIZES  = [11, 17, 26];
 const HI_ALPHA  = 0.32;
 const ERASE_R   = 13;     // 지우개 반경 (페이지 좌표)
 
@@ -49,7 +50,7 @@ const state = {
   tool:     'pen',
   penColor: PEN_COLORS[0],
   hiColor:  HI_COLORS[0],
-  sizeMul:  PEN_SIZES[1],
+  sizeIdx:  1,
   zoom:     1,
   pageH:    0,
 };
@@ -171,7 +172,10 @@ function relayout() {
   el.page.style.width = PAGE_W + 'px';
   el.page.style.height = 'auto';
   const docH = el.doc.offsetHeight;
-  const pageH = Math.max(docH + TAIL_H, Math.ceil(el.scroller.clientHeight / z));
+  let pageH = Math.max(docH + TAIL_H, Math.ceil(el.scroller.clientHeight / z));
+  // z 나 docH 가 어떤 이유로든 망가지면 pageH 가 Infinity 가 되고, 그러면
+  // buildTiles 가 canvas 를 무한히 만들어 탭이 통째로 멈춥니다.
+  if (!Number.isFinite(pageH) || pageH < 1) pageH = (docH || 0) + TAIL_H;
 
   state.pageH = pageH;
   el.page.style.height = pageH + 'px';
@@ -230,7 +234,7 @@ function backingRatio() {
 }
 
 function buildTiles() {
-  const n = Math.max(1, Math.ceil(state.pageH / TILE_H));
+  const n = clamp(Math.ceil(state.pageH / TILE_H) || 1, 1, MAX_TILES);
 
   while (tiles.length > n) {
     const t = tiles.pop();
@@ -396,8 +400,8 @@ function drawStroke(ctx, s) {
   ctx.stroke();
 }
 
-// 필압 → 두께. 절반을 바닥에 깔아, 가볍게 스쳐도 선이 실처럼 가늘어지지 않습니다.
-const widthAt = (s, pr) => s.w * (0.5 + 0.5 * clamp(pr, 0, 1));
+// 필압 → 두께. 40% 를 바닥에 깔아, 가볍게 스쳐도 선이 실처럼 가늘어지지 않습니다.
+const widthAt = (s, pr) => s.w * (0.4 + 0.6 * clamp(pr, 0, 1));
 
 // 그리는 중에는 방금 들어온 조각만 덧그립니다 (전체 재렌더 없이).
 function drawLastSegment(s) {
@@ -459,7 +463,7 @@ function beginInput(id, cx, cy, force) {
   active = {
     t: isHi ? 'hi' : 'pen',
     c: isHi ? state.hiColor : state.penColor,
-    w: (isHi ? HI_BASE : PEN_BASE) * state.sizeMul,
+    w: (isHi ? HI_SIZES : PEN_SIZES)[state.sizeIdx],
     p: [x, y, force],
     bb: [x, y, x, y],
   };
@@ -1020,7 +1024,7 @@ el.toolGroup.querySelectorAll('.tool').forEach(b => {
 
 el.sizes.querySelectorAll('.size').forEach(b => {
   b.addEventListener('click', () => {
-    state.sizeMul = parseFloat(b.dataset.size);
+    state.sizeIdx = parseInt(b.dataset.idx, 10);
     el.sizes.querySelectorAll('.size').forEach(x => x.classList.toggle('on', x === b));
   });
 });
