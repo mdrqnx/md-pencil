@@ -115,6 +115,22 @@
       <section class="tabpane" data-pane="recent">
         <ul id="recentList" class="recent-list"></ul>
         <p class="hint" id="recentEmpty" hidden>아직 저장된 문서가 없습니다.</p>
+
+        <div class="backup">
+          <div class="backup-head">
+            <strong>백업</strong>
+            <span id="backupStat" class="rc-meta"></span>
+          </div>
+          <p class="hint">
+            문서와 필기는 이 기기 안에만 있습니다. 아이패드를 초기화하면 사라지니,
+            가끔 내보내서 iCloud Drive에 두세요.
+          </p>
+          <div class="backup-row">
+            <button class="btn" id="btnExport">전체 내보내기</button>
+            <button class="btn" id="btnImport">백업 가져오기</button>
+            <input type="file" id="importInput" accept=".json,application/json" hidden>
+          </div>
+        </div>
       </section>
 
       <section class="tabpane" data-pane="file" hidden>

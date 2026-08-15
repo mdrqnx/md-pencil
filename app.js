@@ -57,7 +57,8 @@ const el = {};
 [ 'toolbar','scroller','canvasWrap','page','doc','ink','empty','emptyOpen','emptyRecent',
   'btnLibrary','btnUndo','btnRedo','btnZoomIn','btnZoomOut','btnZoomFit',
   'toolGroup','swatches','sizes','sheet','tabs','recentList','recentEmpty',
-  'fileInput','filedrop','pasteName','pasteArea','pasteGo','urlInput','urlGo','urlErr','toast'
+  'fileInput','filedrop','pasteName','pasteArea','pasteGo','urlInput','urlGo','urlErr','toast',
+  'btnExport','btnImport','importInput','backupStat'
 ].forEach(id => el[id] = document.getElementById(id));
 
 
@@ -98,6 +99,7 @@ const allDocs    = ()  => tx('docs', 'readonly',  s => s.getAll());
 const delDoc     = id  => tx('docs', 'readwrite', s => s.delete(id));
 const putInk     = rec => tx('ink',  'readwrite', s => s.put(rec));
 const getInk     = id  => tx('ink',  'readonly',  s => s.get(id));
+const allInk     = ()  => tx('ink',  'readonly',  s => s.getAll());
 const delInk     = id  => tx('ink',  'readwrite', s => s.delete(id));
 
 const uid = () => (crypto.randomUUID ? crypto.randomUUID()
@@ -232,10 +234,10 @@ function buildTiles() {
     t.mounted = false;         // 배율이 바뀌었을 수 있으므로 전부 다시 잡습니다
     t.dirty = true;
   }
-  updateTileMounts();
+  updateTileMounts(true);
 }
 
-function updateTileMounts() {
+function updateTileMounts(immediate) {
   if (!tiles.length) return;
   const z = state.zoom;
   const top    = el.scroller.scrollTop / z;
@@ -259,17 +261,23 @@ function updateTileMounts() {
       t.mounted = false;
     }
   }
-  scheduleRepaint();
+  scheduleRepaint(immediate);
 }
 
 let repaintQueued = false;
-function scheduleRepaint() {
+
+function repaintNow() {
+  repaintQueued = false;
+  for (const t of tiles) if (t.mounted && t.dirty) paintTile(t);
+}
+
+// 문서를 열거나 배율을 바꿀 때는 즉시 그립니다. rAF 는 탭이 아직 화면에
+// 올라오지 않았으면 실행되지 않아서, 그때 맡겨두면 필기가 빠진 화면이 남습니다.
+function scheduleRepaint(immediate) {
+  if (immediate) { repaintNow(); return; }
   if (repaintQueued) return;
   repaintQueued = true;
-  requestAnimationFrame(() => {
-    repaintQueued = false;
-    for (const t of tiles) if (t.mounted && t.dirty) paintTile(t);
-  });
+  requestAnimationFrame(repaintNow);
 }
 
 function markDirty(bb) {
@@ -716,6 +724,9 @@ async function loadRecent() {
   renderRecent(el.recentList, docs);
   renderRecent(el.emptyRecent, docs.slice(0, 5));
   el.recentEmpty.hidden = docs.length > 0;
+
+  const ink = docs.reduce((n, d) => n + (d.inkCount || 0), 0);
+  el.backupStat.textContent = docs.length ? `문서 ${docs.length}개 · 필기 ${ink}획` : '';
   return docs;
 }
 
@@ -759,6 +770,109 @@ function renderRecent(ul, docs) {
 
     li.append(main, del);
     ul.appendChild(li);
+  }
+}
+
+// ── 백업 ────────────────────────────────────────────────────────────────
+//
+// 문서와 필기는 이 기기의 IndexedDB 에만 있습니다. 기기를 초기화하면 그대로
+// 사라지므로, 통째로 파일 하나에 담아 밖으로 빼낼 길이 필요합니다.
+
+const BACKUP_FORMAT = 'md-pencil-backup';
+
+async function collectBackup() {
+  await saveInkNow();
+  const docs = (await allDocs()) || [];
+  const ink  = (await allInk())  || [];
+  const inkMap = new Map(ink.map(r => [r.id, r.strokes || []]));
+  return {
+    format: BACKUP_FORMAT,
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    docs: docs.map(d => ({ ...d, strokes: inkMap.get(d.id) || [] })),
+  };
+}
+
+function backupFileName() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `md-pencil-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+}
+
+async function exportAll() {
+  el.btnExport.disabled = true;
+  const label = el.btnExport.textContent;
+  el.btnExport.textContent = '준비 중…';
+  try {
+    const payload = await collectBackup();
+    if (!payload.docs.length) { toast('내보낼 문서가 없습니다'); return; }
+
+    const json = JSON.stringify(payload);
+    const name = backupFileName();
+    const blob = new Blob([json], { type: 'application/json' });
+
+    // 아이패드에서는 공유 시트가 자연스럽습니다 — "파일에 저장" 으로 iCloud Drive 에 넣을 수 있습니다.
+    const file = new File([blob], name, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'md pencil 백업' });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;   // 사용자가 취소한 것이므로 조용히 물러납니다
+        // 공유가 안 되는 상황이면 아래 내려받기로 넘어갑니다
+      }
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast(`${payload.docs.length}개 문서를 내보냈습니다`);
+  } catch (e) {
+    toast('내보내기에 실패했습니다: ' + e.message);
+  } finally {
+    el.btnExport.disabled = false;
+    el.btnExport.textContent = label;
+  }
+}
+
+async function importBackup(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || data.format !== BACKUP_FORMAT || !Array.isArray(data.docs)) {
+      toast('md pencil 백업 파일이 아닙니다');
+      return;
+    }
+
+    await saveInkNow();
+
+    let added = 0, replaced = 0;
+    for (const entry of data.docs) {
+      if (!entry || !entry.id || typeof entry.md !== 'string') continue;
+      const { strokes, ...doc } = entry;
+      const exists = await getDoc(doc.id);
+      await putDoc(doc);
+      await putInk({ id: doc.id, strokes: Array.isArray(strokes) ? strokes : [] });
+      exists ? replaced++ : added++;
+    }
+
+    const docs = await loadRecent();
+
+    if (state.doc) {
+      // 지금 보고 있는 문서를 백업이 덮어썼다면 화면도 새 내용으로 맞춥니다
+      const fresh = await getDoc(state.doc.id);
+      if (fresh) await openDoc(fresh);
+    } else if (docs.length) {
+      // 빈 화면이었다면 가져온 것 중 가장 최근 문서를 바로 열어줍니다
+      const full = await getDoc(docs[0].id);
+      if (full) { closeSheet(); await openDoc(full); }
+    }
+
+    toast(added || replaced ? `새 문서 ${added}개, 덮어쓴 문서 ${replaced}개` : '가져올 문서가 없습니다');
+  } catch (e) {
+    toast('가져오기에 실패했습니다: ' + e.message);
   }
 }
 
@@ -866,6 +980,14 @@ el.pasteGo.addEventListener('click', () => {
   const guess = (md.match(/^#\s+(.+)$/m) || [])[1];
   addDoc(el.pasteName.value.trim() || guess || '붙여넣은 문서', md);
   el.pasteArea.value = ''; el.pasteName.value = '';
+});
+
+el.btnExport.addEventListener('click', exportAll);
+el.btnImport.addEventListener('click', () => el.importInput.click());
+el.importInput.addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (f) importBackup(f);
 });
 
 el.urlGo.addEventListener('click', () => fetchUrl(el.urlInput.value));
