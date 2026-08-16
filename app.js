@@ -32,7 +32,7 @@ const ZOOM_MIN  = 0.3;
 const ZOOM_MAX  = 4.0;
 
 // 가늘게 / 보통 / 굵게. 필압 1.0 일 때의 두께입니다.
-const PEN_SIZES = [2, 4, 6];
+const PEN_SIZES = [1.4, 2.6, 4];
 const HI_SIZES  = [11, 17, 26];
 // 글자 뒤에 깔리므로 이 정도로 진해도 글자를 가리지 않습니다
 const HI_ALPHA  = 0.42;
@@ -482,8 +482,9 @@ function drawStroke(ctx, s) {
   ctx.stroke();
 }
 
-// 필압 → 두께. 40% 를 바닥에 깔아, 가볍게 스쳐도 선이 실처럼 가늘어지지 않습니다.
-const widthAt = (s, pr) => s.w * (0.4 + 0.6 * clamp(pr, 0, 1));
+// 필압 → 두께. 55% 를 바닥에 깔아, 가볍게 스쳐도 선이 실처럼 가늘어지지 않습니다.
+// 이 값이 낮으면 획의 시작이 뾰족해져 삐침처럼 보입니다.
+const widthAt = (s, pr) => s.w * (0.55 + 0.45 * clamp(pr, 0, 1));
 
 // 그리는 중에는 방금 들어온 조각만 덧그립니다 (전체 재렌더 없이).
 function drawLastSegment(s) {
@@ -525,7 +526,78 @@ function toPage(clientX, clientY) {
   return { x: (clientX - pageRect.left) / s, y: (clientY - pageRect.top) / s };
 }
 
+// ── 손떨림 필터 (One Euro) ──────────────────────────────────────────────
+//
+// 떨림은 천천히 움직일 때만 눈에 띕니다. 그런데 필터를 일정하게 세게 걸면 빠르게
+// 그을 때 선이 손을 못 따라와 흐물거립니다. One Euro 는 그때그때의 속도를 보고
+// 세기를 바꿉니다 — 느리면 세게 다듬고, 빠르면 거의 그대로 통과시킵니다.
+//
+// 두 상수가 손맛을 정합니다.
+//   MIN_CUTOFF : 낮출수록 느린 구간이 더 매끄러워집니다 (대신 지연이 붙습니다)
+//   BETA       : 높일수록 속도에 민감해져 빠른 획의 지연이 줄어듭니다
+const OE_MIN_CUTOFF = 0.9;
+const OE_BETA       = 0.030;
+const OE_D_CUTOFF   = 1.0;
+// 이보다 가까운 점은 버립니다. 화면 기준 약 2.2px 이 되도록 배율로 나눕니다 —
+// 확대해서 작게 쓸 때 점이 성기게 잡히면 곡선이 뭉툭해집니다.
+const MIN_STEP2     = 5.0;
+const minStep2 = () => MIN_STEP2 / (state.zoom * state.zoom || 1);
+
+const oeAlpha = (cutoff, te) => 1 / (1 + (1 / (2 * Math.PI * cutoff)) / te);
+
+function newSmoother() {
+  return { x: 0, y: 0, dx: 0, dy: 0, t: 0, has: false };
+}
+
+function smoothPoint(sm, x, y, t) {
+  if (!sm.has) { sm.has = true; sm.t = t; sm.x = x; sm.y = y; return { x, y }; }
+
+  let te = (t - sm.t) / 1000;
+  if (!(te > 0) || te > 0.2) te = 1 / 120;   // 첫 샘플이나 긴 공백은 표준 주기로 봅니다
+  sm.t = t;
+
+  const ad = oeAlpha(OE_D_CUTOFF, te);
+  sm.dx += ad * ((x - sm.x) / te - sm.dx);
+  sm.dy += ad * ((y - sm.y) / te - sm.dy);
+
+  const a = oeAlpha(OE_MIN_CUTOFF + OE_BETA * Math.hypot(sm.dx, sm.dy), te);
+  sm.x += a * (x - sm.x);
+  sm.y += a * (y - sm.y);
+  return { x: sm.x, y: sm.y };
+}
+
+// 펜이 닿거나 떨어지는 순간 한 점이 튀어 삐침으로 남는 일이 있습니다.
+// 양 끝에서 "짧은데 방향이 급히 꺾이는" 점 하나를 걷어냅니다.
+const SPUR_LEN = 5;      // 페이지 좌표. 이보다 긴 첫 구간은 진짜 획으로 봅니다
+const SPUR_COS = -0.3;   // 약 107도보다 더 꺾이면 튄 것으로 봅니다
+
+function trimSpur(p, atStart) {
+  const n = p.length / 3;
+  if (n < 4) return p;
+  const i0 = atStart ? 0 : n - 1;
+  const i1 = atStart ? 1 : n - 2;
+  const i2 = atStart ? 2 : n - 3;
+  const ax = p[i1 * 3] - p[i0 * 3], ay = p[i1 * 3 + 1] - p[i0 * 3 + 1];
+  const bx = p[i2 * 3] - p[i1 * 3], by = p[i2 * 3 + 1] - p[i1 * 3 + 1];
+  const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+  if (!la || !lb || la > SPUR_LEN) return p;
+  if ((ax * bx + ay * by) / (la * lb) > SPUR_COS) return p;
+  return atStart ? p.slice(3) : p.slice(0, p.length - 3);
+}
+
+function bboxOf(p) {
+  let x0 = p[0], y0 = p[1], x1 = p[0], y1 = p[1];
+  for (let i = 3; i < p.length; i += 3) {
+    const x = p[i], y = p[i + 1];
+    if (x < x0) x0 = x; if (y < y0) y0 = y;
+    if (x > x1) x1 = x; if (y > y1) y1 = y;
+  }
+  return [x0, y0, x1, y1];
+}
+
+
 let active = null;      // 그리는 중인 스트로크
+let smoother = null;    // 그 획에 걸린 손떨림 필터
 let eraseSession = null;// 지우는 중 삭제된 항목들
 let activeId = null;    // 터치 식별자 (마우스는 'mouse')
 let sawTouch = false;   // 아이패드에서 뒤따라오는 가짜 마우스 이벤트를 무시하기 위한 플래그
@@ -549,6 +621,8 @@ function beginInput(id, cx, cy, force) {
     forceLayer = 'under';
     updateTileMounts(true);
   }
+  smoother = newSmoother();
+  smoothPoint(smoother, x, y, performance.now());
   active = {
     t: isHi ? 'hi' : 'pen',
     c: isHi ? state.hiColor : state.penColor,
@@ -558,19 +632,30 @@ function beginInput(id, cx, cy, force) {
   };
 }
 
-function moveInput(cx, cy, force) {
-  const { x, y } = toPage(cx, cy);
+// 처음 몇 점은 필압이 아직 안 실려 획의 머리가 뾰족해집니다. 그 구간은
+// 나중에 들어온 값으로 거슬러 올라가 덮어써서 삐침을 없앱니다.
+const WARM_PTS = 5;
 
-  if (state.tool === 'eraser') { if (eraseSession) eraseAt(x, y); return; }
+function moveInput(cx, cy, force) {
+  const raw = toPage(cx, cy);
+
+  if (state.tool === 'eraser') { if (eraseSession) eraseAt(raw.x, raw.y); return; }
   if (!active) return;
+
+  // 필터는 모든 샘플을 봐야 합니다. 점 솎아내기는 다듬은 뒤에.
+  const { x, y } = smoothPoint(smoother, raw.x, raw.y, performance.now());
 
   const p = active.p, n = p.length;
   const dx = x - p[n - 3], dy = y - p[n - 2];
-  if (dx * dx + dy * dy < 1.2) return;    // 너무 촘촘한 점은 버립니다
+  if (dx * dx + dy * dy < minStep2()) return;
 
-  // 필압을 살짝 뭉개면 선 굵기가 덜 떨립니다
-  const smooth = p[n - 1] * 0.4 + force * 0.6;
+  const smooth = p[n - 1] * 0.5 + force * 0.5;   // 굵기가 덜 떨리게
   p.push(x, y, smooth);
+
+  const cnt = p.length / 3;
+  if (cnt <= WARM_PTS) {
+    for (let i = 2; i < p.length; i += 3) if (p[i] < smooth) p[i] = smooth;
+  }
 
   const bb = active.bb;
   if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y;
@@ -600,8 +685,11 @@ function endInput() {
   active = null;
   if (s.p.length < 3) return;
 
+  s.p = trimSpur(trimSpur(s.p, true), false);
+
   const pad = s.w;
-  s.bb = [s.bb[0] - pad, s.bb[1] - pad, s.bb[2] + pad, s.bb[3] + pad];
+  const bb = bboxOf(s.p);
+  s.bb = [bb[0] - pad, bb[1] - pad, bb[2] + pad, bb[3] + pad];
   state.strokes.push(s);
   state.undo.push({ k: 'add', s });
   state.redo.length = 0;

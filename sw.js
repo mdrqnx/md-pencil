@@ -2,7 +2,7 @@
    전략은 stale-while-revalidate — 캐시를 즉시 내주고 뒤에서 갱신합니다.
    그래서 새 버전을 올려도 "한 번 더 열면" 반영됩니다. */
 
-const CACHE = 'mdpencil-v10';
+const CACHE = 'mdpencil-v11';
 const SHELL = [
   './',
   './index.html',
