@@ -36,7 +36,9 @@ const PEN_SIZES = [1.5, 2.1, 3];
 const HI_SIZES  = [11, 17, 26];
 // 글자 뒤에 깔리므로 이 정도로 진해도 글자를 가리지 않습니다
 const HI_ALPHA  = 0.42;
-const ERASE_R   = 13;     // 지우개 반경 (페이지 좌표)
+// 스친 획을 통째로 지우므로 반경이 곧 잘못 지워지는 범위입니다. 본문 줄
+// 간격의 절반쯤이라야 한 줄을 지우다 옆 줄이 딸려가지 않습니다.
+const ERASE_R   = 7;      // 지우개 반경 (페이지 좌표)
 
 const PEN_COLORS = ['#1c1c1e', '#d1372e', '#2f6fd0', '#1f9254', '#b45309'];
 const HI_COLORS  = ['#ffd84d', '#8ce99a', '#ffa8d2', '#8fd6ff', '#c9b6ff'];
