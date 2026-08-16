@@ -959,23 +959,28 @@ function showUrlErr(m) { el.urlErr.textContent = m; el.urlErr.hidden = false; }
 // ── 밖에서 넘어오는 문서 ────────────────────────────────────────────────
 //
 // iOS 는 웹앱을 공유 시트에 올려주지 않습니다. 그래서 단축어가 대신 문을 두드립니다.
-//   #md=<URL 인코딩된 원문>   또는   #url=<주소>   (+ 선택: &name=<이름>)
+//   #md=<URL 인코딩된 원문>   또는   #url=<주소>   (앞에 name=<이름>& 을 붙일 수 있습니다)
 // 해시를 쓰는 이유는 두 가지입니다. 서버로 전송되지 않아 원문이 로그에 남지 않고,
 // 쿼리스트링보다 길이 여유가 큽니다.
 //
-// URLSearchParams 를 쓰지 않습니다. 그쪽은 '+' 를 공백으로 되돌리는데,
-// 마크다운 원문에 들어 있는 '+' 가 그대로 날아갑니다.
+// 파싱에서 남의 인코더를 믿지 않습니다.
+//   · URLSearchParams 는 '+' 를 공백으로 되돌립니다. 원문의 '+' 가 날아갑니다.
+//   · iOS 단축어의 URL 인코딩은 '&' 나 '#' 을 그냥 두기도 합니다. 그래서 md 는
+//     "&" 로 자르지 않고 해시 끝까지 통째로 가져옵니다. 그 대신 md= 는 맨 뒤여야 합니다.
+const decode = s => { try { return decodeURIComponent(s); } catch { return s; } };
 
 function hashParam(h, key) {
   const m = new RegExp('(?:^|&)' + key + '=([^&]*)').exec(h);
-  if (!m) return null;
-  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+  return m ? decode(m[1]) : null;
 }
 
 function readHandoff() {
   const h = location.hash.replace(/^#/, '');
   if (!h || h.indexOf('=') < 0) return null;
-  const md = hashParam(h, 'md'), url = hashParam(h, 'url'), name = hashParam(h, 'name');
+
+  const m = /(?:^|&)md=([\s\S]*)$/.exec(h);   // md 뒤로는 전부 원문입니다
+  const md = m ? decode(m[1]) : null;
+  const url = hashParam(h, 'url'), name = hashParam(h, 'name');
   if (md === null && !url) return null;
   return { md, url, name };
 }
