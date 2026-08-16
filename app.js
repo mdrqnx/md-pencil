@@ -40,11 +40,21 @@ const ERASE_R   = 13;     // 지우개 반경 (페이지 좌표)
 const PEN_COLORS = ['#1c1c1e', '#d1372e', '#2f6fd0', '#1f9254', '#b45309'];
 const HI_COLORS  = ['#ffd84d', '#8ce99a', '#ffa8d2', '#8fd6ff', '#c9b6ff'];
 
-// 본문 글자 크기. 문서마다 따로 저장하고, 필기가 하나라도 생기면 잠급니다.
-// 크기가 바뀌면 문단이 다시 흐르고, 그러면 이미 그어둔 필기가 통째로 어긋납니다.
-const FS_STEPS   = [13, 14, 15, 16, 17, 18, 20, 22, 24];
+// 본문 글자 크기와 폭. 문서마다 따로 저장하고, 필기가 하나라도 생기면 잠급니다.
+// 둘 중 무엇이 바뀌어도 문단이 다시 흐르고, 그러면 이미 그어둔 필기가 어긋납니다.
+//
+// 폭은 글자 크기와 묶지 않습니다. 묶어두면 글자를 키울수록 여백이 잡아먹히는데,
+// 그 여백이 바로 필기 공간이라 반대로 움직여야 맞습니다. 각자 정하게 둡니다.
+const FS_STEPS   = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 const FS_DEFAULT = 16;
-const FS_KEY     = 'mdpencil.fs';
+const FS_MIN = 6, FS_MAX = 32;      // 옛 문서에 남아 있을 수 있는 값까지 받아줍니다
+
+const CW_STEPS   = [360, 420, 480, 540, 600, 660];
+const CW_DEFAULT = 540;
+const CW_MIN = 240, CW_MAX = 780;
+
+const DOC_PAD_L = 56;               // style.css 의 #doc padding-left 와 같아야 합니다
+const FS_KEY = 'mdpencil.fs', CW_KEY = 'mdpencil.cw';
 
 // ── 상태 ────────────────────────────────────────────────────────────────
 
@@ -64,7 +74,8 @@ const state = {
 const el = {};
 [ 'toolbar','scroller','canvasWrap','page','doc','ink','empty','emptyOpen','emptyRecent',
   'btnLibrary','btnUndo','btnRedo','btnZoomIn','btnZoomOut','btnZoomFit',
-  'btnFont','fontPop','fontSizes','fontNote',
+  'btnFont','fontPop','fontSizes','docWidths','marginNote','fontNote',
+  'shareBase','btnCopyBase',
   'toolGroup','swatches','sizes','sheet','tabs','recentList','recentEmpty',
   'fileInput','filedrop','pasteName','pasteArea','pasteGo','urlInput','urlGo','urlErr','toast',
   'btnExport','btnImport','importInput','backupStat'
@@ -714,61 +725,92 @@ function refreshHistoryButtons() {
 }
 
 
-// ── 본문 글자 크기 ──────────────────────────────────────────────────────
+// ── 본문 글자 크기와 폭 ─────────────────────────────────────────────────
 //
-// 문서 하나에 크기 하나. 필기가 시작되면 잠깁니다.
+// 문서 하나에 값 한 벌. 필기가 시작되면 잠깁니다.
 // 마지막으로 고른 값은 다음에 넣는 새 문서의 기본값이 됩니다.
 
-function normFs(v) {
-  const n = parseFloat(v);
-  return FS_STEPS.includes(n) ? n : FS_DEFAULT;
+const normFs = v => { const n = parseFloat(v); return n >= FS_MIN && n <= FS_MAX ? n : FS_DEFAULT; };
+const normCw = v => { const n = parseFloat(v); return n >= CW_MIN && n <= CW_MAX ? Math.round(n) : CW_DEFAULT; };
+
+function pref(key, norm, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : norm(v);
+  } catch { return fallback; }
+}
+const defaultFs = () => pref(FS_KEY, normFs, FS_DEFAULT);
+const defaultCw = () => pref(CW_KEY, normCw, CW_DEFAULT);
+
+// cw 가 없던 시절의 문서는 본문 폭이 글자 크기를 따라갔습니다(34em, 상한 624px).
+// 그때 그대로 재현해야 이미 그어둔 필기가 제자리에 남습니다.
+function layoutOf(doc) {
+  const fs = normFs(doc && doc.fs);
+  const cw = (doc && doc.cw != null) ? normCw(doc.cw)
+                                     : clamp(Math.round(34 * fs), CW_MIN, 624);
+  return { fs, cw };
 }
 
-function defaultFs() {
-  try { return normFs(localStorage.getItem(FS_KEY)); } catch { return FS_DEFAULT; }
+function applyDocLayout(doc) {
+  const { fs, cw } = layoutOf(doc);
+  el.doc.style.fontSize = fs + 'px';
+  el.doc.style.width = (DOC_PAD_L + cw) + 'px';
 }
 
-function applyDocFontSize(fs) {
-  el.doc.style.fontSize = normFs(fs) + 'px';
-}
+const layoutLocked = () => state.strokes.length > 0;
 
-const fontLocked = () => state.strokes.length > 0;
-
-async function setDocFontSize(fs) {
+async function setDocLayout(patch) {
   if (!state.doc) return;
-  if (fontLocked()) { toast('필기가 있어 글자 크기를 바꿀 수 없습니다'); return; }
+  if (layoutLocked()) { toast('필기가 있어 바꿀 수 없습니다'); return; }
 
-  fs = normFs(fs);
-  if (fs === normFs(state.doc.fs)) return;
+  const cur = layoutOf(state.doc);
+  const next = { fs: patch.fs != null ? normFs(patch.fs) : cur.fs,
+                 cw: patch.cw != null ? normCw(patch.cw) : cur.cw };
+  if (next.fs === cur.fs && next.cw === cur.cw) return;
 
-  state.doc = { ...state.doc, fs };
-  applyDocFontSize(fs);
+  state.doc = { ...state.doc, ...next };
+  applyDocLayout(state.doc);
   relayout();          // 문서 높이가 달라졌으니 잉크 타일을 다시 잡습니다
   updatePageRect();
   buildFontPop();
 
-  try { localStorage.setItem(FS_KEY, String(fs)); } catch { /* 저장 못 해도 그만 */ }
+  try {
+    localStorage.setItem(FS_KEY, String(next.fs));
+    localStorage.setItem(CW_KEY, String(next.cw));
+  } catch { /* 저장 못 해도 그만 */ }
   try { await putDoc({ ...state.doc, updatedAt: Date.now(), pageH: state.pageH }); }
-  catch (e) { console.warn('글자 크기 저장 실패', e); }
+  catch (e) { console.warn('본문 설정 저장 실패', e); }
 }
 
-function buildFontPop() {
-  const cur = state.doc ? normFs(state.doc.fs) : defaultFs();
-  const locked = fontLocked();
+// 지금 값이 눈금에 없으면(옛 문서) 눈금에 끼워 넣습니다. 잠겨 있어도 무엇이
+// 걸려 있는지는 보여야 합니다.
+const stepsWith = (steps, cur) =>
+  steps.includes(cur) ? steps : [...steps, cur].sort((a, b) => a - b);
 
-  el.fontSizes.innerHTML = '';
-  for (const fs of FS_STEPS) {
-    const b = document.createElement('button');
-    b.className = 'fs-chip' + (fs === cur ? ' on' : '');
-    b.textContent = fs;
-    b.disabled = locked;
-    b.addEventListener('click', () => setDocFontSize(fs));
-    el.fontSizes.appendChild(b);
-  }
+function buildFontPop() {
+  const cur = state.doc ? layoutOf(state.doc) : { fs: defaultFs(), cw: defaultCw() };
+  const locked = layoutLocked();
+
+  const fill = (host, steps, val, cls, onPick) => {
+    host.innerHTML = '';
+    for (const v of stepsWith(steps, val)) {
+      const b = document.createElement('button');
+      b.className = cls + (v === val ? ' on' : '');
+      b.textContent = v;
+      b.disabled = locked;
+      b.addEventListener('click', () => onPick(v));
+      host.appendChild(b);
+    }
+  };
+  fill(el.fontSizes, FS_STEPS, cur.fs, 'fs-chip', fs => setDocLayout({ fs }));
+  fill(el.docWidths, CW_STEPS, cur.cw, 'fs-chip', cw => setDocLayout({ cw }));
+
+  const right = PAGE_W - DOC_PAD_L - cur.cw;
+  el.marginNote.textContent = `필기 여백 — 왼쪽 ${DOC_PAD_L} · 오른쪽 ${right}`;
 
   el.fontNote.classList.toggle('locked', locked);
   el.fontNote.textContent = locked
-    ? `필기 ${state.strokes.length}획이 있어 잠겼습니다. 크기를 바꾸면 문단이 다시 흘러 필기가 어긋납니다.`
+    ? `필기 ${state.strokes.length}획이 있어 잠겼습니다. 여기를 바꾸면 문단이 다시 흘러 필기가 어긋납니다.`
     : '필기를 시작하기 전까지만 바꿀 수 있습니다. 여기서 고른 값은 다음에 넣는 문서의 기본값이 됩니다.';
 }
 
@@ -809,8 +851,12 @@ async function openDoc(doc) {
   refreshHistoryButtons();
 
   closeFontPop();
+  // cw 가 없던 옛 문서는 여기서 값을 굳혀 둡니다. 나중에 기본값이 바뀌어도
+  // 이 문서의 렌더 결과는 그대로 남아야 필기가 어긋나지 않습니다.
+  state.doc = doc = { ...doc, ...layoutOf(doc) };
+
   renderMarkdown(doc.md);
-  applyDocFontSize(doc.fs);   // 높이를 재기 전에 확정해야 합니다
+  applyDocLayout(doc);        // 높이를 재기 전에 확정해야 합니다
   el.empty.hidden = true;
 
   const rec = await getInk(doc.id).catch(() => null);
@@ -829,7 +875,8 @@ async function openDoc(doc) {
 }
 
 async function addDoc(name, md, { open = true } = {}) {
-  const doc = { id: uid(), name: name || '제목 없음', md, fs: defaultFs(),
+  const doc = { id: uid(), name: name || '제목 없음', md,
+                fs: defaultFs(), cw: defaultCw(),
                 createdAt: Date.now(), updatedAt: Date.now() };
   await putDoc(doc);
   if (open) { closeSheet(); await openDoc(doc); }
@@ -880,19 +927,24 @@ function toRawUrl(u) {
   return u;
 }
 
+async function fetchMd(u) {
+  const raw = toRawUrl(String(u || '').trim());
+  if (!/^https?:\/\//.test(raw)) throw new Error('http 나 https 로 시작하는 주소여야 합니다');
+  const r = await fetch(raw, { redirect: 'follow' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return { md: await r.text(), name: stripExt(decodeURIComponent(raw.split('/').pop() || '문서')) };
+}
+
+const guessName = md => (String(md).match(/^#\s+(.+)$/m) || [])[1];
+
 async function fetchUrl(u) {
   el.urlErr.hidden = true;
-  const raw = toRawUrl(u.trim());
-  if (!/^https?:\/\//.test(raw)) { showUrlErr('http 나 https 로 시작하는 주소를 넣어주세요'); return; }
   el.urlGo.disabled = true;
   el.urlGo.textContent = '가져오는 중…';
   try {
-    const r = await fetch(raw, { redirect: 'follow' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const md = await r.text();
-    const name = stripExt(decodeURIComponent(raw.split('/').pop() || '문서'));
+    const got = await fetchMd(u);
     el.urlInput.value = '';
-    await addDoc(name, md);
+    await addDoc(got.name, got.md);
   } catch (e) {
     showUrlErr('가져오지 못했습니다: ' + e.message +
                '\n비공개 저장소이거나, 그 서버가 외부 접근을 막고 있을 수 있습니다.');
@@ -902,6 +954,61 @@ async function fetchUrl(u) {
   }
 }
 function showUrlErr(m) { el.urlErr.textContent = m; el.urlErr.hidden = false; }
+
+
+// ── 밖에서 넘어오는 문서 ────────────────────────────────────────────────
+//
+// iOS 는 웹앱을 공유 시트에 올려주지 않습니다. 그래서 단축어가 대신 문을 두드립니다.
+//   #md=<URL 인코딩된 원문>   또는   #url=<주소>   (+ 선택: &name=<이름>)
+// 해시를 쓰는 이유는 두 가지입니다. 서버로 전송되지 않아 원문이 로그에 남지 않고,
+// 쿼리스트링보다 길이 여유가 큽니다.
+//
+// URLSearchParams 를 쓰지 않습니다. 그쪽은 '+' 를 공백으로 되돌리는데,
+// 마크다운 원문에 들어 있는 '+' 가 그대로 날아갑니다.
+
+function hashParam(h, key) {
+  const m = new RegExp('(?:^|&)' + key + '=([^&]*)').exec(h);
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
+
+function readHandoff() {
+  const h = location.hash.replace(/^#/, '');
+  if (!h || h.indexOf('=') < 0) return null;
+  const md = hashParam(h, 'md'), url = hashParam(h, 'url'), name = hashParam(h, 'name');
+  if (md === null && !url) return null;
+  return { md, url, name };
+}
+
+function clearHash() {
+  try { history.replaceState(null, '', location.pathname + location.search); }
+  catch { location.hash = ''; }
+}
+
+async function runHandoff(h) {
+  try {
+    if (h.md !== null) {
+      if (!h.md.trim()) { toast('넘어온 내용이 비어 있습니다'); return false; }
+      await addDoc(h.name || guessName(h.md) || '공유받은 문서', h.md);
+    } else {
+      const got = await fetchMd(h.url);
+      await addDoc(h.name || got.name, got.md);
+    }
+    toast('공유로 받았습니다');
+    return true;
+  } catch (e) {
+    toast('가져오지 못했습니다: ' + e.message);
+    return false;
+  }
+}
+
+// 앱이 이미 떠 있는데 단축어가 같은 주소를 다시 열면 해시만 바뀝니다
+window.addEventListener('hashchange', async () => {
+  const h = readHandoff();
+  if (!h) return;
+  clearHash();
+  await runHandoff(h);
+});
 
 
 // ── 최근 문서 목록 ──────────────────────────────────────────────────────
@@ -1186,9 +1293,25 @@ el.filedrop.addEventListener('drop', e => { if (e.dataTransfer) readFiles(e.data
 el.pasteGo.addEventListener('click', () => {
   const md = el.pasteArea.value;
   if (!md.trim()) { toast('내용이 비어 있습니다'); return; }
-  const guess = (md.match(/^#\s+(.+)$/m) || [])[1];
-  addDoc(el.pasteName.value.trim() || guess || '붙여넣은 문서', md);
+  addDoc(el.pasteName.value.trim() || guessName(md) || '붙여넣은 문서', md);
   el.pasteArea.value = ''; el.pasteName.value = '';
+});
+
+// 단축어에 붙여넣을 주소. 배포 위치가 어디든 지금 실행 중인 곳을 그대로 씁니다.
+el.shareBase.textContent = location.origin + location.pathname.replace(/index\.html$/, '') + '#md=';
+el.btnCopyBase.addEventListener('click', async () => {
+  const t = el.shareBase.textContent;
+  try {
+    await navigator.clipboard.writeText(t);
+    toast('복사했습니다');
+  } catch {
+    // 클립보드를 못 쓰는 상황이면 직접 고를 수 있게 선택만 해 둡니다
+    const r = document.createRange();
+    r.selectNodeContents(el.shareBase);
+    const sel = getSelection();
+    sel.removeAllRanges(); sel.addRange(r);
+    toast('길게 눌러 복사하세요');
+  }
 });
 
 el.btnExport.addEventListener('click', exportAll);
@@ -1247,6 +1370,13 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveI
   relayout();
 
   const docs = await loadRecent();
+
+  const handoff = readHandoff();
+  if (handoff) {
+    clearHash();
+    if (await runHandoff(handoff)) return;   // addDoc 이 문서를 열어줍니다
+  }
+
   if (docs.length) {
     const full = await getDoc(docs[0].id);
     if (full) { await openDoc(full); return; }

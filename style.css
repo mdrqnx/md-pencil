@@ -181,11 +181,10 @@ html, body {
    ───────────────────────────────────────────────────────── */
 
 #doc {
-  /* 글줄 길이(34em)를 고정하고 폭이 따라오게 합니다. 글자를 키워도 한 줄에
-     들어가는 글자 수가 그대로라 읽는 느낌이 변하지 않습니다. 다만 680px 에서
-     멈춥니다 — 오른쪽에 남는 곳이 필기 공간이라 220px 아래로 줄어들면 곤란합니다.
-     font-size 는 문서마다 다르며 app.js 가 인라인으로 지정합니다. */
-  width: min(calc(56px + 34em), 680px);
+  /* width 와 font-size 는 문서마다 다릅니다. app.js 가 인라인으로 지정하고,
+     여기 값은 문서를 열기 전까지만 쓰입니다. padding-left 를 바꾸면 app.js 의
+     DOC_PAD_L 도 같이 바꿔야 여백 표시가 맞습니다. */
+  width: 596px;
   padding: 52px 0 0 56px;
   font-size: 16px;
   line-height: 1.5;
@@ -313,21 +312,24 @@ html, body {
   animation: rise .16s;
 }
 .pop[hidden] { display: none; }
-.pop-head { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 10px; }
+.pop-head  { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+.pop-head2 { margin-top: 16px; }
 
-.pop-sizes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.pop-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.pop-grid.wide { grid-template-columns: repeat(3, 1fr); }
 .fs-chip {
   height: 38px;
   padding: 0;
   border: 1px solid var(--chrome-br); border-radius: 9px;
   background: var(--paper); color: var(--ink);
-  font: inherit; font-variant-numeric: tabular-nums;
+  font: inherit; font-size: 14px; font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
 .fs-chip.on { background: var(--accent); border-color: transparent; color: #fff; font-weight: 600; }
 .fs-chip[disabled] { opacity: .4; cursor: default; }
 
-.pop-note { margin: 12px 0 10px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+.pop-sub  { margin: 8px 0 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pop-note { margin: 14px 0 10px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
 .pop-note.locked { color: #d93a34; }
 
 
@@ -405,6 +407,31 @@ html, body {
 .filedrop span { font-size: 16px; color: var(--ink); font-weight: 500; }
 .filedrop small { font-size: 13px; }
 .filedrop.over { border-color: var(--accent); background: rgba(47,111,208,.06); }
+
+.howto { margin-top: 18px; border-top: 1px solid var(--chrome-br); padding-top: 14px; }
+.howto summary {
+  font-size: 14px; font-weight: 600; color: var(--accent);
+  cursor: pointer; list-style: none; padding: 4px 0;
+}
+.howto summary::-webkit-details-marker { display: none; }
+.howto summary::before { content: '▸ '; }
+.howto[open] summary::before { content: '▾ '; }
+.howto[open] summary { margin-bottom: 10px; }
+.howto .steps { margin: 0 0 12px; padding-left: 1.4em; }
+.howto .steps li { margin-bottom: 5px; }
+.howto .en { opacity: .65; font-size: .92em; }
+
+.copyrow { display: flex; align-items: stretch; gap: 8px; margin-bottom: 12px; }
+.copyrow code {
+  flex: 1 1 auto; min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--chrome-br); border-radius: var(--radius);
+  background: var(--paper);
+  font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;
+  overflow-wrap: anywhere;
+  user-select: all; -webkit-user-select: all;
+}
+.copyrow .btn { flex: 0 0 auto; padding: 9px 14px; font-size: 14px; }
 
 .recent-list, .empty-recent { list-style: none; margin: 0; padding: 0; }
 .recent-list li, .empty-recent li {
