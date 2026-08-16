@@ -77,7 +77,8 @@ const el = {};
   'btnFont','fontPop','fontSizes','docWidths','marginNote','fontNote',
   'shareBase','btnCopyBase',
   'toolGroup','swatches','sizes','sheet','tabs','recentList','recentEmpty',
-  'fileInput','filedrop','pasteName','pasteArea','pasteGo','urlInput','urlGo','urlErr','toast',
+  'fileInput','filedrop','btnClip','pasteName','pasteArea','pasteGo',
+  'urlInput','urlGo','urlErr','toast',
   'btnExport','btnImport','importInput','backupStat'
 ].forEach(id => el[id] = document.getElementById(id));
 
@@ -1294,6 +1295,32 @@ el.fileInput.addEventListener('change', async e => {
   e.preventDefault(); el.filedrop.classList.remove('over');
 }));
 el.filedrop.addEventListener('drop', e => { if (e.dataTransfer) readFiles(e.dataTransfer.files); });
+
+// 단축어가 클립보드에 담아둔 원문을 바로 문서로 만듭니다.
+// readText() 는 사용자 제스처 안에서만 되고, iOS 는 매번 붙여넣기 허가를 묻습니다.
+el.btnClip.addEventListener('click', async () => {
+  if (!navigator.clipboard || !navigator.clipboard.readText) {
+    toast('이 브라우저는 클립보드 읽기를 지원하지 않습니다. 아래에 직접 붙여넣으세요');
+    return;
+  }
+  el.btnClip.disabled = true;
+  const label = el.btnClip.textContent;
+  el.btnClip.textContent = '읽는 중…';
+  try {
+    const t = await navigator.clipboard.readText();
+    if (!t || !t.trim()) { toast('클립보드가 비어 있습니다'); return; }
+    const name = el.pasteName.value.trim() || guessName(t) || '가져온 문서';
+    el.pasteName.value = '';
+    await addDoc(name, t);
+    toast(`${t.length.toLocaleString()}자를 가져왔습니다`);
+  } catch (e) {
+    // 허가를 거절했거나 클립보드가 잠긴 경우
+    toast('클립보드를 읽지 못했습니다. 아래 칸에 직접 붙여넣으세요');
+  } finally {
+    el.btnClip.disabled = false;
+    el.btnClip.textContent = label;
+  }
+});
 
 el.pasteGo.addEventListener('click', () => {
   const md = el.pasteArea.value;

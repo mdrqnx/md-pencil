@@ -167,31 +167,35 @@
             아이폰·아이패드는 <b>웹앱을 공유 시트에 올려주지 않습니다.</b> 애플이 막아둔
             것이라 이 앱에서 어찌할 수 있는 부분이 아닙니다. 대신 <b>단축어</b>를 하나
             만들어 두면 그게 공유 시트에 뜹니다. <b>md 파일을 그대로 공유하면 됩니다</b> —
-            단축어가 파일을 읽어서 이 앱에 넘겨줍니다.
+            단축어가 파일을 읽어 클립보드에 담아줍니다.
           </p>
           <ol class="hint steps">
-            <li>단축어 앱 → 새 단축어</li>
+            <li>단축어 앱 → 새 단축어. 이름은 <b>md pencil</b> 처럼 알아보기 쉽게</li>
             <li>정보(ⓘ) → <b>공유 시트에 표시</b> 켜기. 입력 유형은 <b>파일</b>과 <b>텍스트</b></li>
             <li>동작 <b>입력에서 텍스트 가져오기</b> <span class="en">(Get Text from Input)</span></li>
-            <li>동작 <b>URL 인코딩</b> <span class="en">(URL Encode)</span></li>
-            <li>동작 <b>텍스트</b> — 아래 주소를 붙여넣고 그 뒤에 <b>URL 인코딩</b> 결과를 잇습니다</li>
-            <li>동작 <b>URL 열기</b> <span class="en">(Open URLs)</span> — 방금 만든 텍스트를 넣습니다</li>
+            <li>동작 <b>클립보드에 복사</b> <span class="en">(Copy to Clipboard)</span></li>
           </ol>
+          <p class="hint">
+            동작은 이 둘이 전부입니다. 이제 md 파일 → <b>공유</b> → 그 단축어 → 이 앱을 열고
+            <b>붙여넣기</b> 탭의 <b>클립보드에서 가져오기</b>.
+          </p>
+
+          <p class="hint">
+            <b>주소로 여는 방법은 권하지 않습니다.</b> 단축어에서
+            <code>URL 인코딩</code> → <code>URL 열기</code> 로 아래 주소를 열 수도 있지만,
+            함정이 둘 있습니다. ① 홈 화면 앱이 아니라 <b>Safari 로 열립니다</b> — iOS 는
+            둘의 저장 공간을 따로 쓰므로 홈 화면 앱에는 문서가 안 보입니다.
+            ② 단축어의 URL 인코딩이 줄바꿈을 그냥 두는 바람에 <code>URL 열기</code> 가
+            그것을 여러 주소로 갈라 읽어 <b>첫 줄만 들어옵니다.</b> 굳이 쓰려면 인코딩
+            다음에 <b>텍스트 대치</b>(정규 표현식)로 <code>\n</code> 을 <code>%0A</code> 로
+            바꾸는 동작을 하나 더 넣어야 합니다.
+          </p>
           <div class="copyrow">
             <code id="shareBase"></code>
             <button class="btn" id="btnCopyBase">복사</button>
           </div>
-          <p class="hint">
-            이름은 첫 <code># 제목</code> 에서 따옵니다. 파일 이름을 그대로 쓰고 싶으면
-            <b>파일 세부사항 가져오기</b> → <b>이름</b> 을 앞쪽에 넣고 주소를
-            <code>…/#name=[이름]&amp;md=[인코딩결과]</code> 로 만드세요.
-            <b><code>md=</code> 는 반드시 맨 뒤</b>여야 합니다. 그 뒤는 전부 원문으로 읽습니다.
-          </p>
-          <p class="hint">
-            주소를 넘기고 싶으면 <code>#md=</code> 대신 <code>#url=</code> 을 씁니다.
-            원문은 주소 안에 실려 가므로 서버로는 전송되지 않지만, 아주 큰 파일은
-            주소 길이 한계에 걸릴 수 있습니다. 그럴 때는 아래 두 방법이 확실합니다.
-          </p>
+
+          <p class="hint">단축어 없이 되는 길도 있습니다.</p>
           <ul class="hint steps">
             <li>공유 → <b>파일에 저장</b> 한 다음 위에서 고르기</li>
             <li>화면 분할(Split View)로 <b>파일 앱을 옆에 띄우고 md 를 이 창으로 끌어다 놓기</b></li>
@@ -200,7 +204,14 @@
       </section>
 
       <section class="tabpane" data-pane="paste" hidden>
-        <p class="hint">마크다운 원문을 그대로 붙여넣으세요.</p>
+        <button class="btn primary wide" id="btnClip">클립보드에서 가져오기</button>
+        <p class="hint">
+          단축어로 공유해 두었다면 이 버튼 하나면 됩니다. iOS 가 붙여넣기를 허락할지
+          한 번 물어봅니다.
+        </p>
+
+        <div class="orline"><span>또는 직접</span></div>
+
         <input type="text" id="pasteName" class="field" placeholder="문서 이름 (비워도 됩니다)">
         <textarea id="pasteArea" class="field area" placeholder="# 제목&#10;&#10;내용..."></textarea>
         <button class="btn primary" id="pasteGo">넣기</button>
