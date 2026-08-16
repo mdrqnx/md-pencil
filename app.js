@@ -40,6 +40,12 @@ const ERASE_R   = 13;     // 지우개 반경 (페이지 좌표)
 const PEN_COLORS = ['#1c1c1e', '#d1372e', '#2f6fd0', '#1f9254', '#b45309'];
 const HI_COLORS  = ['#ffd84d', '#8ce99a', '#ffa8d2', '#8fd6ff', '#c9b6ff'];
 
+// 본문 글자 크기. 문서마다 따로 저장하고, 필기가 하나라도 생기면 잠급니다.
+// 크기가 바뀌면 문단이 다시 흐르고, 그러면 이미 그어둔 필기가 통째로 어긋납니다.
+const FS_STEPS   = [13, 14, 15, 16, 17, 18, 20, 22, 24];
+const FS_DEFAULT = 16;
+const FS_KEY     = 'mdpencil.fs';
+
 // ── 상태 ────────────────────────────────────────────────────────────────
 
 const state = {
@@ -58,6 +64,7 @@ const state = {
 const el = {};
 [ 'toolbar','scroller','canvasWrap','page','doc','ink','empty','emptyOpen','emptyRecent',
   'btnLibrary','btnUndo','btnRedo','btnZoomIn','btnZoomOut','btnZoomFit',
+  'btnFont','fontPop','fontSizes','fontNote',
   'toolGroup','swatches','sizes','sheet','tabs','recentList','recentEmpty',
   'fileInput','filedrop','pasteName','pasteArea','pasteGo','urlInput','urlGo','urlErr','toast',
   'btnExport','btnImport','importInput','backupStat'
@@ -707,6 +714,90 @@ function refreshHistoryButtons() {
 }
 
 
+// ── 본문 글자 크기 ──────────────────────────────────────────────────────
+//
+// 문서 하나에 크기 하나. 필기가 시작되면 잠깁니다.
+// 마지막으로 고른 값은 다음에 넣는 새 문서의 기본값이 됩니다.
+
+function normFs(v) {
+  const n = parseFloat(v);
+  return FS_STEPS.includes(n) ? n : FS_DEFAULT;
+}
+
+function defaultFs() {
+  try { return normFs(localStorage.getItem(FS_KEY)); } catch { return FS_DEFAULT; }
+}
+
+function applyDocFontSize(fs) {
+  el.doc.style.fontSize = normFs(fs) + 'px';
+}
+
+const fontLocked = () => state.strokes.length > 0;
+
+async function setDocFontSize(fs) {
+  if (!state.doc) return;
+  if (fontLocked()) { toast('필기가 있어 글자 크기를 바꿀 수 없습니다'); return; }
+
+  fs = normFs(fs);
+  if (fs === normFs(state.doc.fs)) return;
+
+  state.doc = { ...state.doc, fs };
+  applyDocFontSize(fs);
+  relayout();          // 문서 높이가 달라졌으니 잉크 타일을 다시 잡습니다
+  updatePageRect();
+  buildFontPop();
+
+  try { localStorage.setItem(FS_KEY, String(fs)); } catch { /* 저장 못 해도 그만 */ }
+  try { await putDoc({ ...state.doc, updatedAt: Date.now(), pageH: state.pageH }); }
+  catch (e) { console.warn('글자 크기 저장 실패', e); }
+}
+
+function buildFontPop() {
+  const cur = state.doc ? normFs(state.doc.fs) : defaultFs();
+  const locked = fontLocked();
+
+  el.fontSizes.innerHTML = '';
+  for (const fs of FS_STEPS) {
+    const b = document.createElement('button');
+    b.className = 'fs-chip' + (fs === cur ? ' on' : '');
+    b.textContent = fs;
+    b.disabled = locked;
+    b.addEventListener('click', () => setDocFontSize(fs));
+    el.fontSizes.appendChild(b);
+  }
+
+  el.fontNote.classList.toggle('locked', locked);
+  el.fontNote.textContent = locked
+    ? `필기 ${state.strokes.length}획이 있어 잠겼습니다. 크기를 바꾸면 문단이 다시 흘러 필기가 어긋납니다.`
+    : '필기를 시작하기 전까지만 바꿀 수 있습니다. 여기서 고른 값은 다음에 넣는 문서의 기본값이 됩니다.';
+}
+
+function openFontPop() {
+  if (!state.doc) { toast('문서를 먼저 여세요'); return; }
+  buildFontPop();
+  el.fontPop.hidden = false;
+
+  const r = el.btnFont.getBoundingClientRect();
+  const w = el.fontPop.offsetWidth;
+  el.fontPop.style.left = Math.round(clamp(r.left + r.width / 2 - w / 2, 8, window.innerWidth - w - 8)) + 'px';
+  el.fontPop.style.top  = Math.round(r.bottom + 6) + 'px';
+}
+
+function closeFontPop() { el.fontPop.hidden = true; }
+
+el.btnFont.addEventListener('click', () => {
+  el.fontPop.hidden ? openFontPop() : closeFontPop();
+});
+
+// 바깥을 누르면 닫습니다. 팝오버를 연 그 클릭에 바로 닫히지 않도록 버튼도 제외합니다.
+document.addEventListener('pointerdown', e => {
+  if (el.fontPop.hidden) return;
+  const t = e.target;
+  if (t && t.closest && t.closest('#fontPop, #btnFont')) return;
+  closeFontPop();
+}, true);
+
+
 // ── 문서 열기 ───────────────────────────────────────────────────────────
 
 async function openDoc(doc) {
@@ -717,7 +808,9 @@ async function openDoc(doc) {
   state.redo.length = 0;
   refreshHistoryButtons();
 
+  closeFontPop();
   renderMarkdown(doc.md);
+  applyDocFontSize(doc.fs);   // 높이를 재기 전에 확정해야 합니다
   el.empty.hidden = true;
 
   const rec = await getInk(doc.id).catch(() => null);
@@ -729,13 +822,15 @@ async function openDoc(doc) {
   el.scroller.scrollTop = 0;
   relayout();
   updatePageRect();
+  el.btnFont.disabled = false;
   document.title = doc.name + ' — md pencil';
 
   await putDoc({ ...doc, updatedAt: Date.now(), pageH: state.pageH });
 }
 
 async function addDoc(name, md, { open = true } = {}) {
-  const doc = { id: uid(), name: name || '제목 없음', md, createdAt: Date.now(), updatedAt: Date.now() };
+  const doc = { id: uid(), name: name || '제목 없음', md, fs: defaultFs(),
+                createdAt: Date.now(), updatedAt: Date.now() };
   await putDoc(doc);
   if (open) { closeSheet(); await openDoc(doc); }
   return doc;
@@ -856,6 +951,7 @@ function renderRecent(ul, docs) {
       if (state.doc && state.doc.id === d.id) {
         state.doc = null; state.strokes = []; el.doc.innerHTML = '';
         el.empty.hidden = false; document.title = 'md pencil';
+        el.btnFont.disabled = true; closeFontPop();
         relayout();
       }
       loadRecent();
@@ -1041,6 +1137,7 @@ el.scroller.addEventListener('scroll', () => {
 }, { passive: true });
 
 window.addEventListener('resize', () => {
+  closeFontPop();   // 버튼 위치가 달라졌으므로
   // 폭에 맞춰 배율만 다시 잡습니다. 문서는 다시 흐르지 않습니다.
   if (!state.doc) { relayout(); return; }
   state.zoom = fitZoom();
@@ -1051,6 +1148,7 @@ window.addEventListener('resize', () => {
 // ── 시트 ────────────────────────────────────────────────────────────────
 
 function openSheet(tab) {
+  closeFontPop();
   el.sheet.hidden = false;
   selectTab(tab || 'recent');
   loadRecent();
@@ -1118,7 +1216,7 @@ window.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openSheet(); }
-  else if (!mod && e.key === 'Escape') closeSheet();
+  else if (!mod && e.key === 'Escape') { closeFontPop(); closeSheet(); }
   else if (!mod && (e.key === '1' || e.key === '2' || e.key === '3')) {
     setTool({ '1': 'pen', '2': 'hi', '3': 'eraser' }[e.key]);
   }
@@ -1144,6 +1242,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveI
 (async function boot() {
   setTool('pen');
   el.sizes.querySelectorAll('.size')[1].classList.add('on');
+  el.btnFont.disabled = true;
   state.zoom = fitZoom();
   relayout();
 
