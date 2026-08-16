@@ -32,7 +32,7 @@ const ZOOM_MIN  = 0.3;
 const ZOOM_MAX  = 4.0;
 
 // 가늘게 / 보통 / 굵게. 필압 1.0 일 때의 두께입니다.
-const PEN_SIZES = [1.4, 2.6, 4];
+const PEN_SIZES = [1.5, 2.1, 3];
 const HI_SIZES  = [11, 17, 26];
 // 글자 뒤에 깔리므로 이 정도로 진해도 글자를 가리지 않습니다
 const HI_ALPHA  = 0.42;
@@ -482,9 +482,9 @@ function drawStroke(ctx, s) {
   ctx.stroke();
 }
 
-// 필압 → 두께. 55% 를 바닥에 깔아, 가볍게 스쳐도 선이 실처럼 가늘어지지 않습니다.
+// 필압 → 두께. 50% 를 바닥에 깔아, 가볍게 스쳐도 선이 실처럼 가늘어지지 않습니다.
 // 이 값이 낮으면 획의 시작이 뾰족해져 삐침처럼 보입니다.
-const widthAt = (s, pr) => s.w * (0.55 + 0.45 * clamp(pr, 0, 1));
+const widthAt = (s, pr) => s.w * (0.5 + 0.5 * clamp(pr, 0, 1));
 
 // 그리는 중에는 방금 들어온 조각만 덧그립니다 (전체 재렌더 없이).
 function drawLastSegment(s) {
@@ -535,18 +535,19 @@ function toPage(clientX, clientY) {
 // 두 상수가 손맛을 정합니다.
 //   MIN_CUTOFF : 낮출수록 느린 구간이 더 매끄러워집니다 (대신 지연이 붙습니다)
 //   BETA       : 높일수록 속도에 민감해져 빠른 획의 지연이 줄어듭니다
-const OE_MIN_CUTOFF = 0.9;
-const OE_BETA       = 0.030;
+const OE_MIN_CUTOFF = 2.5;
+const OE_BETA       = 0.070;
 const OE_D_CUTOFF   = 1.0;
-// 이보다 가까운 점은 버립니다. 화면 기준 약 2.2px 이 되도록 배율로 나눕니다 —
-// 확대해서 작게 쓸 때 점이 성기게 잡히면 곡선이 뭉툭해집니다.
-const MIN_STEP2     = 5.0;
+// 이보다 가까운 점은 버립니다. 화면 기준 약 1.4px 이 되도록 배율로 나눕니다 —
+// 확대해서 작게 쓸 때 점이 성기게 잡히면 곡선이 뭉툭해지고, 짧고 빠른 획은
+// 문턱을 못 넘어 통째로 사라집니다.
+const MIN_STEP2     = 2.0;
 const minStep2 = () => MIN_STEP2 / (state.zoom * state.zoom || 1);
 
 const oeAlpha = (cutoff, te) => 1 / (1 + (1 / (2 * Math.PI * cutoff)) / te);
 
 function newSmoother() {
-  return { x: 0, y: 0, dx: 0, dy: 0, t: 0, has: false };
+  return { x: 0, y: 0, dx: 0, dy: 0, t: 0, has: false, hasD: false };
 }
 
 function smoothPoint(sm, x, y, t) {
@@ -556,9 +557,17 @@ function smoothPoint(sm, x, y, t) {
   if (!(te > 0) || te > 0.2) te = 1 / 120;   // 첫 샘플이나 긴 공백은 표준 주기로 봅니다
   sm.t = t;
 
-  const ad = oeAlpha(OE_D_CUTOFF, te);
-  sm.dx += ad * ((x - sm.x) / te - sm.dx);
-  sm.dy += ad * ((y - sm.y) / te - sm.dy);
+  const vx = (x - sm.x) / te, vy = (y - sm.y) / te;
+  if (!sm.hasD) {
+    // 속도 추정을 0 에서 시작하면 안 됩니다. 속도 저역통과의 alpha 가 0.05 남짓이라
+    // 실제 속도를 따라잡는 데 스무 샘플쯤 걸리는데, 그동안 필터는 "아주 느린 획"으로
+    // 보고 최대로 뭉갭니다. 짧고 빠른 획은 그 안에 끝나버려 통째로 사라집니다.
+    sm.dx = vx; sm.dy = vy; sm.hasD = true;
+  } else {
+    const ad = oeAlpha(OE_D_CUTOFF, te);
+    sm.dx += ad * (vx - sm.dx);
+    sm.dy += ad * (vy - sm.dy);
+  }
 
   const a = oeAlpha(OE_MIN_CUTOFF + OE_BETA * Math.hypot(sm.dx, sm.dy), te);
   sm.x += a * (x - sm.x);
