@@ -34,7 +34,8 @@ const ZOOM_MAX  = 4.0;
 // 가늘게 / 보통 / 굵게. 필압 1.0 일 때의 두께입니다.
 const PEN_SIZES = [2, 4, 6];
 const HI_SIZES  = [11, 17, 26];
-const HI_ALPHA  = 0.32;
+// 글자 뒤에 깔리므로 이 정도로 진해도 글자를 가리지 않습니다
+const HI_ALPHA  = 0.42;
 const ERASE_R   = 13;     // 지우개 반경 (페이지 좌표)
 
 const PEN_COLORS = ['#1c1c1e', '#d1372e', '#2f6fd0', '#1f9254', '#b45309'];
@@ -53,8 +54,28 @@ const CW_STEPS   = [360, 420, 480, 540, 600, 660];
 const CW_DEFAULT = 540;
 const CW_MIN = 240, CW_MAX = 780;
 
+// 글꼴. 아이패드에 이미 들어 있는 것만 씁니다 — 내려받는 글꼴을 쓰면 첫 렌더가
+// 늦어지고, 늦게 도착한 글꼴이 문단을 다시 흐르게 해 필기가 어긋납니다.
+const FONTS = [
+  { k: 'system', label: '시스템',
+    css: '-apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", ' +
+         '"Malgun Gothic", "Noto Sans", Helvetica, Arial, sans-serif' },
+  { k: 'serif', label: '세리프',
+    css: 'ui-serif, "New York", Georgia, "Apple SD Gothic Neo", "Batang", ' +
+         '"Times New Roman", serif' },
+  { k: 'round', label: '둥근',
+    css: 'ui-rounded, "SF Pro Rounded", "Apple SD Gothic Neo", ' +
+         '-apple-system, "Malgun Gothic", sans-serif' },
+  { k: 'mono', label: '고정폭',
+    css: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, ' +
+         '"D2Coding", "Malgun Gothic", monospace' },
+];
+const FF_DEFAULT = 'system';
+const fontCss = k => (FONTS.find(f => f.k === k) || FONTS[0]).css;
+
 const DOC_PAD_L = 56;               // style.css 의 #doc padding-left 와 같아야 합니다
-const FS_KEY = 'mdpencil.fs', CW_KEY = 'mdpencil.cw';
+const FS_KEY = 'mdpencil.fs', CW_KEY = 'mdpencil.cw', FF_KEY = 'mdpencil.ff';
+const FORCE_KEY = 'mdpencil.force';
 
 // ── 상태 ────────────────────────────────────────────────────────────────
 
@@ -67,6 +88,7 @@ const state = {
   penColor: PEN_COLORS[0],
   hiColor:  HI_COLORS[0],
   sizeIdx:  1,
+  force:    true,   // 필압. 끄면 두께가 일정합니다
   zoom:     1,
   pageH:    0,
 };
@@ -74,8 +96,8 @@ const state = {
 const el = {};
 [ 'toolbar','scroller','canvasWrap','page','doc','ink','empty','emptyOpen','emptyRecent',
   'btnLibrary','btnUndo','btnRedo','btnZoomIn','btnZoomOut','btnZoomFit',
-  'btnFont','fontPop','fontSizes','docWidths','marginNote','fontNote',
-  'shareBase','btnCopyBase',
+  'btnFont','fontPop','fontSizes','docWidths','marginNote','docFonts','fontNote',
+  'btnForce','inkUnder','shareBase','btnCopyBase',
   'toolGroup','swatches','sizes','sheet','tabs','recentList','recentEmpty',
   'fileInput','filedrop','btnClip','pasteName','pasteArea','pasteGo',
   'urlInput','urlGo','urlErr','toast',
@@ -245,8 +267,20 @@ function setZoom(z) {
 // 메모리도 감당이 안 됩니다. TILE_H 단위로 잘라 두고, 화면에 보이는 것
 // ±1장만 백킹스토어를 잡습니다. 나머지는 width=0 으로 메모리를 반납하고,
 // 필요해지면 스트로크 벡터에서 다시 그립니다.
+//
+// 층은 둘입니다. 형광펜은 글자 뒤(under), 펜은 글자 위(over).
+// 반투명한 형광펜을 글자 위에 얹으면 글자가 뿌옇게 뜨는데, 뒤로 보내면
+// 종이만 물들고 글자는 그대로 새까맣습니다.
+//
+// 다만 층이 둘이면 타일 메모리도 둘입니다. 그래서 under 는 실제로 형광펜이
+// 지나가는 타일에만 백킹스토어를 잡습니다. 형광펜을 안 쓰면 비용이 0 입니다.
+
+const LAYERS = ['under', 'over'];
+const layerOf = s => (s.t === 'hi' ? 'under' : 'over');
+const layerHost = k => (k === 'under' ? el.inkUnder : el.ink);
 
 let tiles = [];
+let forceLayer = null;   // 그리는 중인 층은 아직 획이 없어도 미리 붙여둡니다
 
 function backingRatio() {
   return clamp((window.devicePixelRatio || 1) * state.zoom, 1, MAX_R);
@@ -257,26 +291,46 @@ function buildTiles() {
 
   while (tiles.length > n) {
     const t = tiles.pop();
-    t.cv.remove();
+    for (const k of LAYERS) t.lay[k].cv.remove();
   }
   while (tiles.length < n) {
-    const cv = document.createElement('canvas');
-    cv.width = 0; cv.height = 0;      // 화면에 들어올 때 비로소 백킹스토어를 잡습니다
-    cv.style.width = PAGE_W + 'px';
-    el.ink.appendChild(cv);
-    tiles.push({ cv, ctx: cv.getContext('2d'), top: 0, h: 0, mounted: false, dirty: true });
+    const lay = {};
+    for (const k of LAYERS) {
+      const cv = document.createElement('canvas');
+      cv.width = 0; cv.height = 0;    // 화면에 들어올 때 비로소 백킹스토어를 잡습니다
+      cv.style.width = PAGE_W + 'px';
+      layerHost(k).appendChild(cv);
+      lay[k] = { cv, ctx: cv.getContext('2d'), mounted: false, dirty: true, R: 1 };
+    }
+    tiles.push({ top: 0, h: 0, lay });
   }
 
   for (let i = 0; i < n; i++) {
     const t = tiles[i];
     t.top = i * TILE_H;
     t.h = Math.min(TILE_H, state.pageH - t.top);
-    t.cv.style.top = t.top + 'px';
-    t.cv.style.height = t.h + 'px';
-    t.mounted = false;         // 배율이 바뀌었을 수 있으므로 전부 다시 잡습니다
-    t.dirty = true;
+    for (const k of LAYERS) {
+      const L = t.lay[k];
+      L.cv.style.top = t.top + 'px';
+      L.cv.style.height = t.h + 'px';
+      // 배율이 바뀌었을 수 있으므로 전부 다시 잡습니다. 픽셀도 여기서 비워야
+      // 합니다 — 다시 안 붙는 층(형광펜이 없는 타일)에 옛 그림이 남습니다.
+      L.cv.width = 0; L.cv.height = 0;
+      L.mounted = false;
+      L.dirty = true;
+    }
   }
   updateTileMounts(true);
+}
+
+function tileHasLayer(t, k) {
+  const bot = t.top + t.h;
+  for (const s of state.strokes) {
+    if (layerOf(s) !== k) continue;
+    if (s.bb[3] < t.top || s.bb[1] > bot) continue;
+    return true;
+  }
+  return false;
 }
 
 function updateTileMounts(immediate) {
@@ -290,17 +344,21 @@ function updateTileMounts(immediate) {
 
   for (let i = 0; i < tiles.length; i++) {
     const t = tiles[i];
-    const want = i >= first && i <= last;
-    if (want && !t.mounted) {
-      t.cv.width  = Math.round(PAGE_W * R);
-      t.cv.height = Math.round(t.h * R);
-      t.ctx = t.cv.getContext('2d');
-      t.R = R;
-      t.mounted = true;
-      t.dirty = true;
-    } else if (!want && t.mounted) {
-      t.cv.width = 0; t.cv.height = 0;
-      t.mounted = false;
+    const near = i >= first && i <= last;
+    for (const k of LAYERS) {
+      const L = t.lay[k];
+      const want = near && (k === 'over' || k === forceLayer || tileHasLayer(t, k));
+      if (want && !L.mounted) {
+        L.cv.width  = Math.round(PAGE_W * R);
+        L.cv.height = Math.round(t.h * R);
+        L.ctx = L.cv.getContext('2d');
+        L.R = R;
+        L.mounted = true;
+        L.dirty = true;
+      } else if (!want && L.mounted) {
+        L.cv.width = 0; L.cv.height = 0;
+        L.mounted = false;
+      }
     }
   }
   scheduleRepaint(immediate);
@@ -310,7 +368,9 @@ let repaintQueued = false;
 
 function repaintNow() {
   repaintQueued = false;
-  for (const t of tiles) if (t.mounted && t.dirty) paintTile(t);
+  for (const t of tiles) for (const k of LAYERS) {
+    if (t.lay[k].mounted && t.lay[k].dirty) paintTile(t, k);
+  }
 }
 
 // 문서를 열거나 배율을 바꿀 때는 즉시 그립니다. rAF 는 탭이 아직 화면에
@@ -322,19 +382,21 @@ function scheduleRepaint(immediate) {
   requestAnimationFrame(repaintNow);
 }
 
-function markDirty(bb) {
+// k 를 주면 그 층만, 안 주면 두 층 다 (지우개는 두 종류를 한꺼번에 지웁니다)
+function markDirty(bb, k) {
   const y0 = bb[1], y1 = bb[3];
   for (const t of tiles) {
     if (y1 < t.top || y0 > t.top + t.h) continue;
-    t.dirty = true;
+    if (k) t.lay[k].dirty = true;
+    else for (const key of LAYERS) t.lay[key].dirty = true;
   }
   scheduleRepaint();
 }
 
-function paintTile(t) {
-  const ctx = t.ctx, R = t.R;
+function paintTile(t, k) {
+  const L = t.lay[k], ctx = L.ctx, R = L.R;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, t.cv.width, t.cv.height);
+  ctx.clearRect(0, 0, L.cv.width, L.cv.height);
   // 페이지 좌표로 그릴 수 있도록: 배율 R, 타일 상단만큼 위로 이동
   ctx.setTransform(R, 0, 0, R, 0, -t.top * R);
   ctx.lineCap = 'round';
@@ -342,10 +404,11 @@ function paintTile(t) {
 
   const top = t.top, bot = t.top + t.h;
   for (const s of state.strokes) {
+    if (layerOf(s) !== k) continue;
     if (s.bb[3] < top || s.bb[1] > bot) continue;
     drawStroke(ctx, s);
   }
-  t.dirty = false;
+  L.dirty = false;
 }
 
 
@@ -431,10 +494,12 @@ function drawLastSegment(s) {
   const x1 = p[i * 3 + 3], y1 = p[i * 3 + 4], r1 = p[i * 3 + 5];
   const w = s.t === 'hi' ? s.w : widthAt(s, (r0 + r1) / 2);
   const yLo = Math.min(y0, y1) - w, yHi = Math.max(y0, y1) + w;
+  const k = layerOf(s);
 
   for (const t of tiles) {
-    if (!t.mounted || yHi < t.top || yLo > t.top + t.h) continue;
-    const ctx = t.ctx;
+    const L = t.lay[k];
+    if (!L.mounted || yHi < t.top || yLo > t.top + t.h) continue;
+    const ctx = L.ctx;
     ctx.save();
     if (s.t === 'hi') { ctx.globalAlpha = HI_ALPHA; }
     ctx.strokeStyle = s.c;
@@ -479,6 +544,11 @@ function beginInput(id, cx, cy, force) {
   }
 
   const isHi = state.tool === 'hi';
+  if (isHi) {
+    // 형광펜 층은 획이 있는 타일에만 붙어 있습니다. 첫 획을 그으려면 먼저 붙여야 합니다.
+    forceLayer = 'under';
+    updateTileMounts(true);
+  }
   active = {
     t: isHi ? 'hi' : 'pen',
     c: isHi ? state.hiColor : state.penColor,
@@ -512,6 +582,7 @@ function moveInput(cx, cy, force) {
 function endInput() {
   document.body.classList.remove('drawing');
   activeId = null;
+  forceLayer = null;
 
   if (state.tool === 'eraser') {
     if (eraseSession && eraseSession.length) {
@@ -535,7 +606,7 @@ function endInput() {
   state.undo.push({ k: 'add', s });
   state.redo.length = 0;
 
-  markDirty(s.bb);   // 직선으로 그려둔 것을 부드러운 곡선으로 확정
+  markDirty(s.bb, layerOf(s));   // 직선으로 그려둔 것을 부드러운 곡선으로 확정
   saveInkSoon();
   refreshHistoryButtons();
 }
@@ -547,7 +618,7 @@ function eraseAt(x, y) {
     if (!hitStroke(s, x, y, ERASE_R)) continue;
     state.strokes.splice(i, 1);
     eraseSession.push({ i, s });
-    markDirty(s.bb);
+    markDirty(s.bb, layerOf(s));
     removed = true;
   }
   if (removed) saveInkSoon();
@@ -580,12 +651,17 @@ function segDist2(x0, y0, x1, y1, px, py) {
 // ── 터치 (애플펜슬) ─────────────────────────────────────────────────────
 
 const isStylus = t => t.touchType === 'stylus';
+
+// 필압을 끄면 언제나 1.0 을 흘려보냅니다. widthAt(s, 1) 이 정확히 s.w 라서
+// 저장 형식을 건드리지 않고도 두께가 일정해집니다.
 function forceOf(t) {
+  if (!state.force) return 1;
   let f = t.force;
   if (!(f > 0)) return 0.5;              // 미지원이거나 아직 값이 안 실린 경우
   const max = t.maximumPossibleForce || 1;
   return clamp(max > 0 ? f / max : f, 0.02, 1);
 }
+const mouseForce = () => (state.force ? 0.55 : 1);
 
 // 손가락 두 개: 벌리면 확대, 움직이지 않고 톡 치면 펜↔지우개.
 // (애플펜슬 더블탭은 UIPencilInteraction 으로만 오고 웹에는 전달되지 않습니다.)
@@ -673,11 +749,11 @@ el.scroller.addEventListener('mousedown', e => {
   if (sawTouch || e.button !== 0 || !state.doc) return;
   if (e.target.closest('a')) return;
   e.preventDefault();
-  beginInput('mouse', e.clientX, e.clientY, 0.55);
+  beginInput('mouse', e.clientX, e.clientY, mouseForce());
 });
 window.addEventListener('mousemove', e => {
   if (activeId !== 'mouse') return;
-  moveInput(e.clientX, e.clientY, 0.55);
+  moveInput(e.clientX, e.clientY, mouseForce());
 });
 window.addEventListener('mouseup', () => { if (activeId === 'mouse') endInput(); });
 
@@ -690,11 +766,11 @@ function undo() {
   if (op.k === 'add') {
     const i = state.strokes.lastIndexOf(op.s);
     if (i >= 0) state.strokes.splice(i, 1);
-    markDirty(op.s.bb);
+    markDirty(op.s.bb, layerOf(op.s));
   } else {
     for (const it of op.items.slice().sort((a, b) => a.i - b.i)) {
       state.strokes.splice(Math.min(it.i, state.strokes.length), 0, it.s);
-      markDirty(it.s.bb);
+      markDirty(it.s.bb, layerOf(it.s));
     }
   }
   state.redo.push(op);
@@ -707,12 +783,12 @@ function redo() {
   if (!op) return;
   if (op.k === 'add') {
     state.strokes.push(op.s);
-    markDirty(op.s.bb);
+    markDirty(op.s.bb, layerOf(op.s));
   } else {
     for (const it of op.items.slice().sort((a, b) => b.i - a.i)) {
       const i = state.strokes.lastIndexOf(it.s);
       if (i >= 0) state.strokes.splice(i, 1);
-      markDirty(it.s.bb);
+      markDirty(it.s.bb, layerOf(it.s));
     }
   }
   state.undo.push(op);
@@ -733,6 +809,7 @@ function refreshHistoryButtons() {
 
 const normFs = v => { const n = parseFloat(v); return n >= FS_MIN && n <= FS_MAX ? n : FS_DEFAULT; };
 const normCw = v => { const n = parseFloat(v); return n >= CW_MIN && n <= CW_MAX ? Math.round(n) : CW_DEFAULT; };
+const normFf = v => (FONTS.some(f => f.k === v) ? v : FF_DEFAULT);
 
 function pref(key, norm, fallback) {
   try {
@@ -742,6 +819,7 @@ function pref(key, norm, fallback) {
 }
 const defaultFs = () => pref(FS_KEY, normFs, FS_DEFAULT);
 const defaultCw = () => pref(CW_KEY, normCw, CW_DEFAULT);
+const defaultFf = () => pref(FF_KEY, normFf, FF_DEFAULT);
 
 // cw 가 없던 시절의 문서는 본문 폭이 글자 크기를 따라갔습니다(34em, 상한 624px).
 // 그때 그대로 재현해야 이미 그어둔 필기가 제자리에 남습니다.
@@ -749,13 +827,15 @@ function layoutOf(doc) {
   const fs = normFs(doc && doc.fs);
   const cw = (doc && doc.cw != null) ? normCw(doc.cw)
                                      : clamp(Math.round(34 * fs), CW_MIN, 624);
-  return { fs, cw };
+  const ff = normFf(doc && doc.ff);   // 없으면 system — 옛 문서의 렌더가 그대로입니다
+  return { fs, cw, ff };
 }
 
 function applyDocLayout(doc) {
-  const { fs, cw } = layoutOf(doc);
+  const { fs, cw, ff } = layoutOf(doc);
   el.doc.style.fontSize = fs + 'px';
   el.doc.style.width = (DOC_PAD_L + cw) + 'px';
+  el.doc.style.fontFamily = fontCss(ff);
 }
 
 const layoutLocked = () => state.strokes.length > 0;
@@ -766,8 +846,9 @@ async function setDocLayout(patch) {
 
   const cur = layoutOf(state.doc);
   const next = { fs: patch.fs != null ? normFs(patch.fs) : cur.fs,
-                 cw: patch.cw != null ? normCw(patch.cw) : cur.cw };
-  if (next.fs === cur.fs && next.cw === cur.cw) return;
+                 cw: patch.cw != null ? normCw(patch.cw) : cur.cw,
+                 ff: patch.ff != null ? normFf(patch.ff) : cur.ff };
+  if (next.fs === cur.fs && next.cw === cur.cw && next.ff === cur.ff) return;
 
   state.doc = { ...state.doc, ...next };
   applyDocLayout(state.doc);
@@ -778,6 +859,7 @@ async function setDocLayout(patch) {
   try {
     localStorage.setItem(FS_KEY, String(next.fs));
     localStorage.setItem(CW_KEY, String(next.cw));
+    localStorage.setItem(FF_KEY, next.ff);
   } catch { /* 저장 못 해도 그만 */ }
   try { await putDoc({ ...state.doc, updatedAt: Date.now(), pageH: state.pageH }); }
   catch (e) { console.warn('본문 설정 저장 실패', e); }
@@ -789,22 +871,34 @@ const stepsWith = (steps, cur) =>
   steps.includes(cur) ? steps : [...steps, cur].sort((a, b) => a - b);
 
 function buildFontPop() {
-  const cur = state.doc ? layoutOf(state.doc) : { fs: defaultFs(), cw: defaultCw() };
+  const cur = state.doc ? layoutOf(state.doc)
+                        : { fs: defaultFs(), cw: defaultCw(), ff: defaultFf() };
   const locked = layoutLocked();
 
-  const fill = (host, steps, val, cls, onPick) => {
+  const fill = (host, steps, val, onPick) => {
     host.innerHTML = '';
     for (const v of stepsWith(steps, val)) {
       const b = document.createElement('button');
-      b.className = cls + (v === val ? ' on' : '');
+      b.className = 'fs-chip' + (v === val ? ' on' : '');
       b.textContent = v;
       b.disabled = locked;
       b.addEventListener('click', () => onPick(v));
       host.appendChild(b);
     }
   };
-  fill(el.fontSizes, FS_STEPS, cur.fs, 'fs-chip', fs => setDocLayout({ fs }));
-  fill(el.docWidths, CW_STEPS, cur.cw, 'fs-chip', cw => setDocLayout({ cw }));
+  fill(el.fontSizes, FS_STEPS, cur.fs, fs => setDocLayout({ fs }));
+  fill(el.docWidths, CW_STEPS, cur.cw, cw => setDocLayout({ cw }));
+
+  el.docFonts.innerHTML = '';
+  for (const f of FONTS) {
+    const b = document.createElement('button');
+    b.className = 'fs-chip' + (f.k === cur.ff ? ' on' : '');
+    b.textContent = f.label;
+    b.style.fontFamily = f.css;      // 눌러보기 전에 생김새를 보여줍니다
+    b.disabled = locked;
+    b.addEventListener('click', () => setDocLayout({ ff: f.k }));
+    el.docFonts.appendChild(b);
+  }
 
   const right = PAGE_W - DOC_PAD_L - cur.cw;
   el.marginNote.textContent = `필기 여백 — 왼쪽 ${DOC_PAD_L} · 오른쪽 ${right}`;
@@ -1238,6 +1332,17 @@ el.sizes.querySelectorAll('.size').forEach(b => {
   });
 });
 
+// 필압 끄기. 세게 눌러 굵기를 만드는 게 아니라 늘 같은 두께로 쓰고 싶을 때.
+function setForce(on) {
+  state.force = !!on;
+  el.btnForce.classList.toggle('on', state.force);
+  try { localStorage.setItem(FORCE_KEY, state.force ? '1' : '0'); } catch { /* 그만 */ }
+}
+el.btnForce.addEventListener('click', () => {
+  setForce(!state.force);
+  toast(state.force ? '필압 켬 — 세게 누를수록 굵어집니다' : '필압 끔 — 두께가 일정합니다');
+});
+
 el.btnUndo.addEventListener('click', undo);
 el.btnRedo.addEventListener('click', redo);
 el.btnZoomIn .addEventListener('click', () => setZoom(state.zoom * 1.15));
@@ -1397,6 +1502,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveI
 (async function boot() {
   setTool('pen');
   el.sizes.querySelectorAll('.size')[1].classList.add('on');
+  setForce(pref(FORCE_KEY, v => v === '1', true));
   el.btnFont.disabled = true;
   state.zoom = fitZoom();
   relayout();

@@ -46,6 +46,7 @@
       <button class="tb-btn size" data-idx="0" title="가늘게"><i style="width:4px;height:4px"></i></button>
       <button class="tb-btn size" data-idx="1" title="보통"><i style="width:8px;height:8px"></i></button>
       <button class="tb-btn size" data-idx="2" title="굵게"><i style="width:12px;height:12px"></i></button>
+      <button class="tb-btn chip" id="btnForce" title="필압 (끄면 두께가 일정합니다)">필압</button>
     </div>
 
     <div class="tb-spacer"></div>
@@ -81,6 +82,8 @@
   <div id="scroller">
     <div id="canvasWrap">
       <div id="page">
+        <!-- 형광펜은 글자 뒤, 펜은 글자 위. 그래야 형광펜이 글자를 뿌옇게 덮지 않습니다 -->
+        <div id="inkUnder"></div>
         <article id="doc"></article>
         <div id="ink"></div>
       </div>
@@ -109,6 +112,9 @@
   <div class="pop-head pop-head2">본문 폭</div>
   <div class="pop-grid wide" id="docWidths"></div>
   <p class="pop-sub" id="marginNote"></p>
+
+  <div class="pop-head pop-head2">글꼴</div>
+  <div class="pop-grid wide" id="docFonts"></div>
 
   <p class="pop-note" id="fontNote"></p>
 </div>

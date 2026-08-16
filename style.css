@@ -107,6 +107,23 @@ html, body {
   background: currentColor;
 }
 
+/* 글자가 들어가는 토글 버튼 (필압) */
+.tb-btn.chip {
+  width: auto;
+  padding: 0 11px;
+  margin-left: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  border: 1px solid var(--chrome-br);
+  height: 30px;
+}
+.tb-btn.chip.on {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+
 .swatch {
   flex: 0 0 auto;
   width: 32px; height: 32px;
@@ -162,12 +179,16 @@ html, body {
   /* width / height / transform 은 app.js가 지정합니다 */
 }
 
-#ink {
+/* 형광펜은 글자 뒤(#inkUnder), 펜은 글자 위(#ink).
+   #doc 에 position 을 주지 않으면 절대 배치된 #inkUnder 가 글자 위로 올라옵니다. */
+#inkUnder, #ink {
   position: absolute;
   inset: 0;
   pointer-events: none;   /* 입력은 #scroller 에서 직접 받습니다 */
 }
-#ink canvas {
+#inkUnder { z-index: 0; }
+#ink      { z-index: 2; }
+#inkUnder canvas, #ink canvas {
   position: absolute;
   left: 0;
   display: block;
@@ -186,6 +207,8 @@ html, body {
      DOC_PAD_L 도 같이 바꿔야 여백 표시가 맞습니다. */
   width: 596px;
   padding: 52px 0 0 56px;
+  position: relative;
+  z-index: 1;             /* #inkUnder 위, #ink 아래 */
   font-size: 16px;
   line-height: 1.5;
   word-break: keep-all;
