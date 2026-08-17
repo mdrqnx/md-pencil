@@ -173,9 +173,13 @@ async function saveInkNow() {
 
 // ── 마크다운 ────────────────────────────────────────────────────────────
 
-const mdit = window.markdownit({ html: false, linkify: true, breaks: false, typographer: false });
+// breaks: 원문의 한 줄을 화면의 한 줄로. 표준 마크다운은 홑줄바꿈을 공백으로
+// 흘려버리지만, 손으로 적어 내려간 메모에서는 끊어 쓴 줄이 곧 뜻입니다.
+// 문서마다 굳혀 두는 값이라 여기 값은 기본값일 뿐입니다 (renderMarkdown 참고).
+const mdit = window.markdownit({ html: false, linkify: true, breaks: true, typographer: false });
 
-function renderMarkdown(src) {
+function renderMarkdown(src, brk = true) {
+  mdit.set({ breaks: !!brk });
   el.doc.innerHTML = mdit.render(src);
 
   // 외부 링크는 새 탭으로 (홈 화면 앱이 브라우저로 튕겨나가지 않게)
@@ -1050,14 +1054,19 @@ async function openDoc(doc) {
   // 이 문서의 렌더 결과는 그대로 남아야 필기가 어긋나지 않습니다.
   state.doc = doc = { ...doc, ...layoutOf(doc) };
 
-  renderMarkdown(doc.md);
-  applyDocLayout(doc);        // 높이를 재기 전에 확정해야 합니다
-  el.empty.hidden = true;
-
+  // brk 를 정하려면 필기가 있는지부터 알아야 해서 잉크를 먼저 읽습니다.
   const rec = await getInk(doc.id).catch(() => null);
   state.strokes = (rec && rec.strokes ? rec.strokes : []).map(s => ({
     t: s.t, c: s.c, w: s.w, p: s.p, bb: s.bb,
   }));
+
+  // brk 가 없던 시절의 문서. 이미 필기가 얹힌 문서는 줄이 늘어나면 그 필기가
+  // 통째로 어긋나므로 옛 렌더 그대로 굳히고, 빈 문서만 지금 규칙으로 옮깁니다.
+  if (doc.brk == null) state.doc = doc = { ...doc, brk: state.strokes.length === 0 };
+
+  renderMarkdown(doc.md, doc.brk);
+  applyDocLayout(doc);        // 높이를 재기 전에 확정해야 합니다
+  el.empty.hidden = true;
 
   state.zoom = fitZoom();
   el.scroller.scrollTop = 0;
@@ -1071,7 +1080,7 @@ async function openDoc(doc) {
 
 async function addDoc(name, md, { open = true } = {}) {
   const doc = { id: uid(), name: name || '제목 없음', md,
-                fs: defaultFs(), cw: defaultCw(),
+                fs: defaultFs(), cw: defaultCw(), brk: true,
                 createdAt: Date.now(), updatedAt: Date.now() };
   await putDoc(doc);
   if (open) { closeSheet(); await openDoc(doc); }
