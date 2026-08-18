@@ -2,13 +2,15 @@
    전략은 stale-while-revalidate — 캐시를 즉시 내주고 뒤에서 갱신합니다.
    그래서 새 버전을 올려도 "한 번 더 열면" 반영됩니다. */
 
-const CACHE = 'mdpencil-v13';
+const CACHE = 'mdpencil-v14';
 const SHELL = [
   './',
   './index.html',
   './style.css',
   './app.js',
   './lib/markdown-it.min.js',
+  './lib/pdf.min.js',
+  './lib/pdf.worker.min.js',
   './manifest.webmanifest',
   './icons/icon-180.png',
   './icons/icon-192.png',

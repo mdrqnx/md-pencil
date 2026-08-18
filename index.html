@@ -82,8 +82,11 @@
   <div id="scroller">
     <div id="canvasWrap">
       <div id="page">
-        <!-- 형광펜은 글자 뒤, 펜은 글자 위. 그래야 형광펜이 글자를 뿌옇게 덮지 않습니다 -->
+        <!-- 형광펜은 글자 뒤, 펜은 글자 위. 그래야 형광펜이 글자를 뿌옇게 덮지 않습니다.
+             PDF 모드에서는 슬라이드 비트맵이 불투명해 뒤에 깔 수 없으므로,
+             형광펜 층이 위로 올라가고 multiply 블렌드로 같은 효과를 냅니다. -->
         <div id="inkUnder"></div>
+        <div id="pdfHost"></div>
         <article id="doc"></article>
         <div id="ink"></div>
       </div>
@@ -93,7 +96,7 @@
   <div id="empty" class="empty">
     <div class="empty-inner">
       <h1>md pencil</h1>
-      <p>마크다운을 읽고 애플펜슬로 그 위에 필기합니다.<br>손가락으로는 스크롤, 펜으로는 그리기.</p>
+      <p>마크다운과 PDF를 읽고 애플펜슬로 그 위에 필기합니다.<br>PDF는 페이지마다 오른쪽에 전용 필기 공간이 붙습니다.<br>손가락으로는 스크롤, 펜으로는 그리기.</p>
       <div class="empty-actions">
         <button class="btn primary" id="emptyOpen">문서 넣기</button>
       </div>
@@ -159,12 +162,17 @@
       </section>
 
       <section class="tabpane" data-pane="file" hidden>
-        <p class="hint">아이패드 파일 앱, iCloud Drive, 다운로드 폴더 어디서든 <code>.md</code> 파일을 고르면 됩니다.</p>
+        <p class="hint">아이패드 파일 앱, iCloud Drive, 다운로드 폴더 어디서든 <code>.md</code> 나
+          <code>.pdf</code> 파일을 고르면 됩니다. PDF는 왼쪽에 원본, 각 페이지의 오른쪽에
+          그 페이지 전용 필기 공간이 생깁니다.</p>
+        <p class="hint">PPT·Keynote 는 브라우저가 그릴 수 없어 <b>PDF로 내보낸 뒤</b> 넣어야 합니다 —
+          PowerPoint: 파일 → 내보내기 → PDF, Keynote: 공유(⋯) → 내보내기 → PDF.
+          슬라이드는 그대로고, 필기 공간이 옆에 붙는 것만 다릅니다.</p>
         <!-- accept 를 걸면 iOS 파일 앱에서 .md 가 회색으로 잠깁니다. 형식은 고른 뒤에 거릅니다. -->
         <input type="file" id="fileInput" multiple hidden>
         <div class="filedrop" id="filedrop">
           <span>탭해서 파일 선택</span>
-          <small>여러 개를 한 번에 넣어도 됩니다</small>
+          <small>md · pdf, 여러 개를 한 번에 넣어도 됩니다</small>
         </div>
 
         <details class="howto">

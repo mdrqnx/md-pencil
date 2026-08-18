@@ -304,6 +304,65 @@ html, body {
 #doc .task-list-item input { margin: 0 .35em .25em -.2em; vertical-align: middle; }
 
 
+/* ── PDF 문서 (슬라이드 | 필기 공간) ─────────────────────────
+   행 배치(top/height/left/width)는 전부 app.js 가 인라인으로 지정합니다.
+   여기는 생김새만 있습니다. 이 파일의 값은 필기 좌표에 영향을 주지 않습니다.
+   ───────────────────────────────────────────────────────── */
+
+#pdfHost {
+  position: absolute;
+  inset: 0;
+  z-index: 1;              /* #doc 와 같은 층. PDF 모드에서 #doc 는 비어 있습니다 */
+}
+
+/* PDF 종이는 다크 모드에서도 흽니다 — 실제 PDF 뷰어들과 같습니다. 형광펜을
+   multiply 로 얹는 방식(아래)도 종이가 어두우면 짓눌려 보이지 않게 됩니다. */
+body.pdf-mode #page { background: #fff; }
+
+.pdf-row {
+  position: absolute;
+  left: 0; width: 100%;
+  border-bottom: 1px solid #d1d9e0;   /* 종이가 늘 흰색이라 색도 고정입니다 */
+}
+
+.pdf-slide {
+  position: absolute;
+  display: block;
+  background: #f6f8fa;                 /* 아직 렌더 전인 페이지의 자리 표시 */
+  box-shadow: 0 0 0 1px #d1d9e0;
+}
+
+.pdf-note {
+  position: absolute;
+  border-left: 1px dashed #d1d9e0;
+  /* 옅은 괘선. 없어도 되지만 빈 공간이 "여기에 쓰는 곳"으로 읽히게 합니다 */
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 31px,
+    rgba(31, 35, 40, .07) 31px 32px
+  );
+}
+
+.pdf-num {
+  position: absolute;
+  bottom: 2px;
+  font-size: 11px;
+  line-height: 1;
+  color: #59636e;
+  font-variant-numeric: tabular-nums;
+  user-select: none; -webkit-user-select: none;
+}
+
+/* 마크다운에서는 형광펜이 글자 뒤(#inkUnder)로 갑니다. PDF 슬라이드는 불투명
+   비트맵이라 뒤에 깔면 안 보이므로, 층을 위로 올리고 multiply 로 섞습니다 —
+   글자는 어두워서 그대로 남고 흰 종이만 물듭니다. 펜(#ink)은 DOM 순서상
+   여전히 그 위입니다. */
+body.pdf-mode #inkUnder {
+  z-index: 2;
+  mix-blend-mode: multiply;
+}
+
+
 /* ── 빈 화면 ────────────────────────────────────────────── */
 
 .empty {

@@ -9,9 +9,15 @@
  *  "수정 안 한다"는 전제 하나로 사라집니다.)
  *
  * 좌표계
- *   페이지 좌표 : PAGE_W × pageH 의 논리 픽셀. 스트로크는 전부 이 좌표로 저장.
+ *   페이지 좌표 : pageW × pageH 의 논리 픽셀. 스트로크는 전부 이 좌표로 저장.
+ *                 pageW 는 문서 종류마다 다르지만(마크다운 900, PDF 1400)
+ *                 한 문서 안에서는 절대 바뀌지 않습니다.
  *   화면 좌표   : 페이지 좌표 × zoom.
  *   백킹스토어  : 페이지 좌표 × R,  R = clamp(devicePixelRatio × zoom, 1, 3)
+ *
+ * PDF 문서는 "편집하지 않는다"는 전제가 저절로 성립합니다 — 리플로우 자체가
+ * 없습니다. 페이지마다 [슬라이드 | 필기 공간] 을 한 행으로 놓고, 행 높이는
+ * 슬라이드의 가로세로 비에서 나오므로 한 번 정해지면 영원히 같습니다.
  *
  * 입력
  *   애플펜슬은 touch.touchType === 'stylus' 로 구분해 preventDefault() 하고,
@@ -23,7 +29,16 @@
 
 // ── 상수 ────────────────────────────────────────────────────────────────
 
-const PAGE_W    = 900;    // 페이지 논리 폭. 이 값은 절대 바뀌지 않습니다.
+const PAGE_W    = 900;    // 마크다운 문서의 페이지 논리 폭. 이 값은 절대 바뀌지 않습니다.
+
+// PDF 문서의 행 배치. 왼쪽에 슬라이드, 오른쪽에 그 페이지 전용 필기 공간.
+// 이 상수들이 곧 필기 좌표계라서 바꾸면 기존 PDF 필기가 어긋납니다.
+const PDF_SLIDE_W     = 780;   // 슬라이드 열의 논리 폭
+const PDF_NOTE_W      = 560;   // 필기 열의 논리 폭
+const PDF_PAD         = 20;    // 바깥 여백과 두 열 사이 간격
+const PDF_ROW_PAD     = 20;    // 행 위아래 여백
+const PDF_PAGE_W      = PDF_PAD + PDF_SLIDE_W + PDF_PAD + PDF_NOTE_W + PDF_PAD;
+const PDF_MAX_SLIDE_H = 2400;  // 극단적으로 길쭉한 페이지에 대한 안전장치
 const TILE_H    = 1024;   // 잉크 타일 하나의 높이 (페이지 좌표)
 const MAX_TILES = 400;    // 안전장치. 40만 px 짜리 문서까지 감당합니다
 const TAIL_H    = 360;    // 문서 끝 아래에 남겨두는 필기 여백
@@ -92,11 +107,12 @@ const state = {
   sizeIdx:  1,
   force:    true,   // 필압. 끄면 두께가 일정합니다
   zoom:     1,
+  pageW:    PAGE_W, // 문서 종류에 따라 다릅니다 (마크다운 PAGE_W, PDF PDF_PAGE_W)
   pageH:    0,
 };
 
 const el = {};
-[ 'toolbar','scroller','canvasWrap','page','doc','ink','empty','emptyOpen','emptyRecent',
+[ 'toolbar','scroller','canvasWrap','page','doc','pdfHost','ink','empty','emptyOpen','emptyRecent',
   'btnLibrary','btnUndo','btnRedo','btnZoomIn','btnZoomOut','btnZoomFit',
   'btnFont','fontPop','fontSizes','docWidths','marginNote','docFonts','fontNote',
   'btnForce','inkUnder','shareBase','btnCopyBase',
@@ -109,7 +125,7 @@ const el = {};
 
 // ── 저장소 (IndexedDB) ──────────────────────────────────────────────────
 
-const DB_NAME = 'mdpencil', DB_VER = 1;
+const DB_NAME = 'mdpencil', DB_VER = 2;
 let dbp = null;
 
 function db() {
@@ -118,8 +134,11 @@ function db() {
     const rq = indexedDB.open(DB_NAME, DB_VER);
     rq.onupgradeneeded = () => {
       const d = rq.result;
-      if (!d.objectStoreNames.contains('docs')) d.createObjectStore('docs', { keyPath: 'id' });
-      if (!d.objectStoreNames.contains('ink'))  d.createObjectStore('ink',  { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('docs'))  d.createObjectStore('docs',  { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('ink'))   d.createObjectStore('ink',   { keyPath: 'id' });
+      // v2: PDF 원본. 텍스트가 아니라서 docs 레코드에 같이 넣으면 최근 목록을
+      // 읽을 때마다 수십 MB 가 딸려 나옵니다. 따로 둡니다.
+      if (!d.objectStoreNames.contains('files')) d.createObjectStore('files', { keyPath: 'id' });
     };
     rq.onsuccess = () => res(rq.result);
     rq.onerror   = () => rej(rq.error);
@@ -146,6 +165,10 @@ const putInk     = rec => tx('ink',  'readwrite', s => s.put(rec));
 const getInk     = id  => tx('ink',  'readonly',  s => s.get(id));
 const allInk     = ()  => tx('ink',  'readonly',  s => s.getAll());
 const delInk     = id  => tx('ink',  'readwrite', s => s.delete(id));
+const putFile    = rec => tx('files', 'readwrite', s => s.put(rec));
+const getFile    = id  => tx('files', 'readonly',  s => s.get(id));
+const allFiles   = ()  => tx('files', 'readonly',  s => s.getAll());
+const delFile    = id  => tx('files', 'readwrite', s => s.delete(id));
 
 const uid = () => (crypto.randomUUID ? crypto.randomUUID()
                                      : 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
@@ -210,15 +233,24 @@ function renderMarkdown(src, brk = true) {
 
 function fitZoom() {
   const avail = el.scroller.clientWidth - 24;
-  return clamp(avail / PAGE_W, ZOOM_MIN, ZOOM_MAX);
+  return clamp(avail / state.pageW, ZOOM_MIN, ZOOM_MAX);
+}
+
+// 문서 내용의 높이. 마크다운은 렌더된 본문에서 재고, PDF 는 행 배치에서 나옵니다.
+function contentH() {
+  if (isPdfDoc()) {
+    const last = pdfRows[pdfRows.length - 1];
+    return last ? last.y + last.h : 0;
+  }
+  return el.doc.offsetHeight;
 }
 
 function relayout() {
   const z = state.zoom;
 
-  el.page.style.width = PAGE_W + 'px';
+  el.page.style.width = state.pageW + 'px';
   el.page.style.height = 'auto';
-  const docH = el.doc.offsetHeight;
+  const docH = contentH();
   let pageH = Math.max(docH + TAIL_H, Math.ceil(el.scroller.clientHeight / z));
   // z 나 docH 가 어떤 이유로든 망가지면 pageH 가 Infinity 가 되고, 그러면
   // buildTiles 가 canvas 를 무한히 만들어 탭이 통째로 멈춥니다.
@@ -228,12 +260,13 @@ function relayout() {
   el.page.style.height = pageH + 'px';
   el.page.style.transform = `scale(${z})`;
 
-  el.canvasWrap.style.width  = Math.round(PAGE_W * z) + 'px';
+  el.canvasWrap.style.width  = Math.round(state.pageW * z) + 'px';
   el.canvasWrap.style.height = Math.round(pageH * z) + 'px';
 
   el.btnZoomFit.textContent = Math.round(z * 100) + '%';
 
   buildTiles();
+  updateSlideMounts();   // 배율이 바뀌었으면 보이는 슬라이드를 새 해상도로
 }
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -242,13 +275,13 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 // 도중에도 부드럽습니다. 손을 떼면 relayout() 이 해상도를 다시 맞춥니다.
 function applyZoomVisual(z, cx, cy) {
   const rect = el.page.getBoundingClientRect();
-  const s0 = rect.width / PAGE_W;
+  const s0 = rect.width / state.pageW;
   const px = (cx - rect.left) / s0;      // 붙잡을 지점의 페이지 좌표
   const py = (cy - rect.top) / s0;
 
   state.zoom = z;
   el.page.style.transform = `scale(${z})`;
-  el.canvasWrap.style.width  = Math.round(PAGE_W * z) + 'px';
+  el.canvasWrap.style.width  = Math.round(state.pageW * z) + 'px';
   el.canvasWrap.style.height = Math.round(state.pageH * z) + 'px';
   el.btnZoomFit.textContent = Math.round(z * 100) + '%';
 
@@ -318,7 +351,7 @@ function buildTiles() {
     for (const k of LAYERS) {
       const cv = document.createElement('canvas');
       cv.width = 0; cv.height = 0;    // 화면에 들어올 때 비로소 백킹스토어를 잡습니다
-      cv.style.width = PAGE_W + 'px';
+      cv.style.width = state.pageW + 'px';
       layerHost(k).appendChild(cv);
       lay[k] = { cv, ctx: cv.getContext('2d'), mounted: false, dirty: true, R: 1 };
     }
@@ -333,6 +366,7 @@ function buildTiles() {
       const L = t.lay[k];
       L.cv.style.top = t.top + 'px';
       L.cv.style.height = t.h + 'px';
+      L.cv.style.width = state.pageW + 'px';   // 타일은 문서를 건너 재사용됩니다. 폭이 달라졌을 수 있습니다
       // 배율이 바뀌었을 수 있으므로 전부 다시 잡습니다. 픽셀도 여기서 비워야
       // 합니다 — 다시 안 붙는 층(형광펜이 없는 타일)에 옛 그림이 남습니다.
       L.cv.width = 0; L.cv.height = 0;
@@ -369,7 +403,7 @@ function updateTileMounts(immediate) {
       const L = t.lay[k];
       const want = near && (k === 'over' || k === forceLayer || tileHasLayer(t, k));
       if (want && !L.mounted) {
-        L.cv.width  = Math.round(PAGE_W * R);
+        L.cv.width  = Math.round(state.pageW * R);
         L.cv.height = Math.round(t.h * R);
         L.ctx = L.cv.getContext('2d');
         L.R = R;
@@ -542,7 +576,7 @@ function updatePageRect() { pageRect = el.page.getBoundingClientRect(); }
 function toPage(clientX, clientY) {
   if (!pageRect) updatePageRect();
   // rect 는 transform 이 적용된 실측값이라, 브라우저 자체 확대까지 자동으로 흡수됩니다.
-  const s = pageRect.width / PAGE_W;
+  const s = pageRect.width / state.pageW;
   return { x: (clientX - pageRect.left) / s, y: (clientY - pageRect.top) / s };
 }
 
@@ -1055,20 +1089,214 @@ document.addEventListener('pointerdown', e => {
 }, true);
 
 
+// ── PDF 문서 ────────────────────────────────────────────────────────────
+//
+// 강의자료(PDF)를 왼쪽에, 페이지마다 전용 필기 공간을 오른쪽에 놓습니다.
+// 별도의 파일이 아니라 같은 종이 위의 "행"이라서, 원본과 필기가 언제나
+// 같이 스크롤되고 페이지에 앵커링된 채로 남습니다.
+//
+// PPT 는 브라우저가 렌더할 수 없습니다(웹에 pptx 렌더러가 없습니다).
+// PowerPoint · Keynote 에서 PDF 로 내보낸 것을 받습니다.
+//
+// 렌더는 pdf.js. 슬라이드 비트맵은 잉크 타일과 같은 방식으로 화면 근처만
+// 백킹스토어를 잡고, 멀어지면 반납했다가 다시 그립니다. 확대를 멈추면
+// relayout 이 새 해상도로 다시 래스터화합니다.
+
+// pdf.js 는 1.5MB 라 PDF 를 실제로 쓸 때만 불러옵니다. 마크다운만 쓰는
+// 사람은 이 비용을 영영 내지 않습니다.
+let pdfjsLoading = null;
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve();
+  if (pdfjsLoading) return pdfjsLoading;
+  pdfjsLoading = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'lib/pdf.min.js';
+    s.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+      res();
+    };
+    s.onerror = () => { pdfjsLoading = null; rej(new Error('pdf.js 를 불러오지 못했습니다')); };
+    document.head.appendChild(s);
+  });
+  return pdfjsLoading;
+}
+
+// 한글 PDF 에 흔한 CID 글꼴은 cmap 이 없으면 글자가 통째로 빠집니다.
+const PDF_SRC_OPTS = {
+  cMapUrl: 'lib/cmaps/',
+  cMapPacked: true,
+  standardFontDataUrl: 'lib/standard_fonts/',
+};
+
+let pdfDoc  = null;   // 열려 있는 pdf.js 문서
+let pdfRows = [];     // 행 배치: {i, y, h, slideH, cv, gen, renderedR}
+let pdfEpoch = 0;     // 문서를 전환하면 올라가고, 낡은 비동기 렌더를 전부 무효화합니다
+
+const isPdfDoc = () => !!(state.doc && state.doc.kind === 'pdf');
+
+function teardownPdf() {
+  pdfEpoch++;
+  if (pdfDoc) { try { pdfDoc.destroy(); } catch { /* 이미 죽었어도 그만 */ } }
+  pdfDoc = null;
+  pdfRows = [];
+  el.pdfHost.innerHTML = '';
+}
+
+// 행 배치는 저장해 둔 페이지 크기(dims)에서만 나옵니다. PDF 본문을 아직 안
+// 읽었어도 종이의 모양은 즉시 확정되고, 필기 좌표도 그 위에서 유효합니다.
+function buildPdfHost(doc) {
+  pdfRows = [];
+  el.pdfHost.innerHTML = '';
+  let y = 0;
+  const dims = doc.dims || [];
+  for (let i = 0; i < dims.length; i++) {
+    const w = dims[i][0] || 1, h = dims[i][1] || 1;
+    const slideH = clamp(Math.round(PDF_SLIDE_W * h / w), 40, PDF_MAX_SLIDE_H);
+    const rowH = slideH + PDF_ROW_PAD * 2;
+
+    const row = document.createElement('div');
+    row.className = 'pdf-row';
+    row.style.top = y + 'px';
+    row.style.height = rowH + 'px';
+
+    const cv = document.createElement('canvas');
+    cv.className = 'pdf-slide';
+    cv.width = 0; cv.height = 0;         // 화면에 들어올 때 비로소 렌더합니다
+    cv.style.left = PDF_PAD + 'px';
+    cv.style.top = PDF_ROW_PAD + 'px';
+    cv.style.width = PDF_SLIDE_W + 'px';
+    cv.style.height = slideH + 'px';
+
+    const note = document.createElement('div');
+    note.className = 'pdf-note';
+    note.style.left = (PDF_PAD + PDF_SLIDE_W + PDF_PAD) + 'px';
+    note.style.top = PDF_ROW_PAD + 'px';
+    note.style.width = PDF_NOTE_W + 'px';
+    note.style.height = slideH + 'px';
+
+    const num = document.createElement('span');
+    num.className = 'pdf-num';
+    num.style.left = PDF_PAD + 'px';
+    num.textContent = i + 1;
+
+    row.append(cv, note, num);
+    el.pdfHost.appendChild(row);
+    pdfRows.push({ i, y, h: rowH, slideH, cv, gen: 0, renderedR: 0, task: null });
+    y += rowH;
+  }
+}
+
+// 잉크 타일의 mount/unmount 와 같은 원리. 화면 ±한 타일 높이 안의 페이지만
+// 비트맵을 잡습니다. 배율이 바뀌었으면 같은 페이지라도 다시 그립니다.
+function updateSlideMounts() {
+  if (!pdfRows.length) return;
+  const z = state.zoom;
+  const top    = el.scroller.scrollTop / z - TILE_H;
+  const bottom = (el.scroller.scrollTop + el.scroller.clientHeight) / z + TILE_H;
+  const R = backingRatio();
+
+  for (const r of pdfRows) {
+    const near = r.y < bottom && r.y + r.h > top;
+    if (near) {
+      if (pdfDoc && r.renderedR !== R) renderSlide(r, R);
+    } else if (r.renderedR || r.gen) {
+      r.gen++;                            // 진행 중인 렌더를 무효화합니다
+      if (r.task) { try { r.task.cancel(); } catch { /* 이미 끝났으면 그만 */ } r.task = null; }
+      r.renderedR = 0;
+      r.cv.width = 0; r.cv.height = 0;    // 메모리 반납
+    }
+  }
+}
+
+async function renderSlide(r, R) {
+  const epoch = pdfEpoch, gen = ++r.gen;
+  if (r.task) { try { r.task.cancel(); } catch { /* 이미 끝났으면 그만 */ } r.task = null; }
+  try {
+    const page = await pdfDoc.getPage(r.i + 1);
+    if (epoch !== pdfEpoch || gen !== r.gen) return;
+
+    const vp1 = page.getViewport({ scale: 1 });
+    const vp  = page.getViewport({ scale: PDF_SLIDE_W * R / vp1.width });
+    r.cv.width  = Math.max(1, Math.round(vp.width));
+    r.cv.height = Math.max(1, Math.round(vp.height));
+    const task = page.render({ canvasContext: r.cv.getContext('2d'), viewport: vp });
+    r.task = task;
+    await task.promise;
+    if (epoch !== pdfEpoch || gen !== r.gen) return;
+    r.task = null;
+    r.renderedR = R;
+  } catch (e) {
+    if (epoch !== pdfEpoch || gen !== r.gen) return;
+    r.task = null;
+    if (!(e && e.name === 'RenderingCancelledException'))
+      console.warn('페이지를 그리지 못했습니다:', r.i + 1, e);
+  }
+}
+
+// PDF 본문은 문서를 연 다음 뒤에서 불러옵니다. 종이와 필기는 그 전에 이미
+// 떠 있으므로, 큰 파일이라도 앱이 멎지 않습니다.
+async function openPdfData(doc) {
+  const epoch = pdfEpoch;
+  try {
+    await loadPdfJs();
+    const rec = await getFile(doc.id);
+    if (!rec || !rec.data) throw new Error('원본 파일이 저장소에 없습니다');
+    // getDocument 는 넘겨준 버퍼를 워커로 이관(detach)합니다. rec 은 어차피
+    // 다시 안 쓰므로 그대로 넘깁니다.
+    const pd = await window.pdfjsLib.getDocument({ data: new Uint8Array(rec.data), ...PDF_SRC_OPTS }).promise;
+    if (epoch !== pdfEpoch) { pd.destroy(); return; }
+    pdfDoc = pd;
+    updateSlideMounts();
+  } catch (e) {
+    if (epoch !== pdfEpoch) return;
+    console.warn('PDF 열기 실패', e);
+    toast('PDF를 열지 못했습니다: ' + (e && e.message || e));
+  }
+}
+
+// 넣을 때 한 번 열어 페이지 수와 각 페이지 크기(회전 반영)를 굳혀 둡니다.
+// 이 값이 행 높이가 되고 행 높이가 곧 필기 좌표계라, 여기서 확정해야
+// 다음에 열 때 PDF 를 읽기도 전에 같은 종이를 만들 수 있습니다.
+async function importPdf(file) {
+  await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  // 사본을 넘깁니다 — getDocument 가 버퍼를 이관해버리면 저장할 원본이 사라집니다.
+  const pd = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)), ...PDF_SRC_OPTS }).promise;
+  const dims = [];
+  for (let i = 1; i <= pd.numPages; i++) {
+    const vp = (await pd.getPage(i)).getViewport({ scale: 1 });
+    dims.push([Math.round(vp.width * 100) / 100, Math.round(vp.height * 100) / 100]);
+  }
+  pd.destroy();
+
+  const doc = { id: uid(), name: (file.name || 'PDF').replace(/\.pdf$/i, ''), kind: 'pdf',
+                pageCount: dims.length, dims,
+                createdAt: Date.now(), updatedAt: Date.now() };
+  await putFile({ id: doc.id, data: buf });
+  await putDoc(doc);
+  return doc;
+}
+
+
 // ── 문서 열기 ───────────────────────────────────────────────────────────
 
 async function openDoc(doc) {
   await saveInkNow();
+  teardownPdf();              // 이전 문서가 PDF 였다면 진행 중인 렌더까지 정리합니다
 
   state.doc = doc;
   state.undo.length = 0;
   state.redo.length = 0;
   refreshHistoryButtons();
-
   closeFontPop();
+
+  const isPdf = doc.kind === 'pdf';
+  document.body.classList.toggle('pdf-mode', isPdf);
+  state.pageW = isPdf ? PDF_PAGE_W : PAGE_W;
+
   // cw 가 없던 옛 문서는 여기서 값을 굳혀 둡니다. 나중에 기본값이 바뀌어도
   // 이 문서의 렌더 결과는 그대로 남아야 필기가 어긋나지 않습니다.
-  state.doc = doc = { ...doc, ...layoutOf(doc) };
+  if (!isPdf) state.doc = doc = { ...doc, ...layoutOf(doc) };
 
   // brk 를 정하려면 필기가 있는지부터 알아야 해서 잉크를 먼저 읽습니다.
   const rec = await getInk(doc.id).catch(() => null);
@@ -1076,22 +1304,29 @@ async function openDoc(doc) {
     t: s.t, c: s.c, w: s.w, p: s.p, bb: s.bb,
   }));
 
-  // brk 가 없던 시절의 문서. 이미 필기가 얹힌 문서는 줄이 늘어나면 그 필기가
-  // 통째로 어긋나므로 옛 렌더 그대로 굳히고, 빈 문서만 지금 규칙으로 옮깁니다.
-  if (doc.brk == null) state.doc = doc = { ...doc, brk: state.strokes.length === 0 };
+  if (isPdf) {
+    el.doc.innerHTML = '';
+    buildPdfHost(doc);        // 종이 모양은 dims 만으로 즉시 확정됩니다
+  } else {
+    // brk 가 없던 시절의 문서. 이미 필기가 얹힌 문서는 줄이 늘어나면 그 필기가
+    // 통째로 어긋나므로 옛 렌더 그대로 굳히고, 빈 문서만 지금 규칙으로 옮깁니다.
+    if (doc.brk == null) state.doc = doc = { ...doc, brk: state.strokes.length === 0 };
 
-  renderMarkdown(doc.md, doc.brk);
-  applyDocLayout(doc);        // 높이를 재기 전에 확정해야 합니다
+    renderMarkdown(doc.md, doc.brk);
+    applyDocLayout(doc);      // 높이를 재기 전에 확정해야 합니다
+  }
   el.empty.hidden = true;
 
   state.zoom = fitZoom();
   el.scroller.scrollTop = 0;
   relayout();
   updatePageRect();
-  el.btnFont.disabled = false;
+  el.btnFont.disabled = isPdf;   // PDF 는 리플로우가 없으니 본문 설정도 없습니다
   document.title = doc.name + ' — md pencil';
 
   await putDoc({ ...doc, updatedAt: Date.now(), pageH: state.pageH });
+
+  if (isPdf) openPdfData(doc);   // 본문은 뒤에서 불러와 화면 근처부터 그립니다
 }
 
 async function addDoc(name, md, { open = true } = {}) {
@@ -1104,6 +1339,8 @@ async function addDoc(name, md, { open = true } = {}) {
 }
 
 const TEXT_EXT = /\.(md|markdown|mdown|mkd|mdx|txt|text)$/i;
+const PDF_EXT  = /\.pdf$/i;
+const PPT_EXT  = /\.(pptx?|key)$/i;
 const stripExt = n => n.replace(TEXT_EXT, '');
 
 const readText = f => (f.text ? f.text() : new Promise((res, rej) => {
@@ -1117,17 +1354,29 @@ async function readFiles(fileList) {
   const all = Array.from(fileList || []);
   if (!all.length) return;
 
-  const files = all.filter(f => TEXT_EXT.test(f.name || '') || /^text\//.test(f.type || ''));
+  const kindOf = f =>
+    PDF_EXT.test(f.name || '') || f.type === 'application/pdf' ? 'pdf' :
+    TEXT_EXT.test(f.name || '') || /^text\//.test(f.type || '') ? 'text' :
+    PPT_EXT.test(f.name || '') ? 'ppt' : null;
+
+  const files = all.filter(f => kindOf(f) === 'text' || kindOf(f) === 'pdf');
+  const ppt = all.some(f => kindOf(f) === 'ppt');
   if (!files.length) {
-    toast(`읽을 수 없는 형식입니다: ${all[0].name || '이름 없는 파일'}`);
+    // PPT 는 브라우저가 렌더할 수 없습니다. PDF 로 내보내는 길을 알려줍니다.
+    toast(ppt ? 'PPT는 그대로 읽지 못합니다 — PDF로 내보낸 뒤 넣어주세요'
+              : `읽을 수 없는 형식입니다: ${all[0].name || '이름 없는 파일'}`);
     return;
   }
 
   let last = null, failed = 0;
   for (const f of files) {
     try {
-      const md = await readText(f);
-      last = await addDoc(stripExt(f.name), md, { open: false });
+      if (kindOf(f) === 'pdf') {
+        last = await importPdf(f);
+      } else {
+        const md = await readText(f);
+        last = await addDoc(stripExt(f.name), md, { open: false });
+      }
     } catch (e) {
       failed++;
       console.warn('파일을 읽지 못했습니다:', f.name, e);
@@ -1138,7 +1387,8 @@ async function readFiles(fileList) {
 
   closeSheet();
   await openDoc(last);
-  if (files.length > 1) toast(`${files.length - failed}개를 넣었습니다`);
+  if (ppt) toast('PPT 파일은 건너뛰었습니다 — PDF로 내보낸 뒤 넣어주세요');
+  else if (files.length > 1) toast(`${files.length - failed}개를 넣었습니다`);
 }
 
 function toRawUrl(u) {
@@ -1263,7 +1513,9 @@ function renderRecent(ul, docs) {
     nm.textContent = d.name;
     const meta = document.createElement('span');
     meta.className = 'rc-meta';
-    meta.textContent = [fmtDate(d.updatedAt), d.inkCount ? `필기 ${d.inkCount}` : null]
+    meta.textContent = [fmtDate(d.updatedAt),
+                        d.kind === 'pdf' ? `PDF ${d.pageCount || '?'}쪽` : null,
+                        d.inkCount ? `필기 ${d.inkCount}` : null]
                        .filter(Boolean).join(' · ');
     main.append(nm, meta);
     main.addEventListener('click', async () => {
@@ -1280,7 +1532,11 @@ function renderRecent(ul, docs) {
     del.addEventListener('click', async ev => {
       ev.stopPropagation();
       await delDoc(d.id); await delInk(d.id).catch(() => {});
+      await delFile(d.id).catch(() => {});
       if (state.doc && state.doc.id === d.id) {
+        teardownPdf();
+        document.body.classList.remove('pdf-mode');
+        state.pageW = PAGE_W;
         state.doc = null; state.strokes = []; el.doc.innerHTML = '';
         el.empty.hidden = false; document.title = 'md pencil';
         el.btnFont.disabled = true; closeFontPop();
@@ -1302,16 +1558,38 @@ function renderRecent(ul, docs) {
 
 const BACKUP_FORMAT = 'md-pencil-backup';
 
+// PDF 원본은 이진 데이터라 JSON 에 base64 로 실어 내보냅니다. 파일이 커지지만
+// "백업 하나로 전부 돌아온다"는 약속이 절반만 지켜지는 것보다 낫습니다.
+function b64FromBuf(buf) {
+  const u = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < u.length; i += 0x8000)
+    s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function bufFromB64(b64) {
+  const bin = atob(b64);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u.buffer;
+}
+
 async function collectBackup() {
   await saveInkNow();
-  const docs = (await allDocs()) || [];
-  const ink  = (await allInk())  || [];
-  const inkMap = new Map(ink.map(r => [r.id, r.strokes || []]));
+  const docs  = (await allDocs())  || [];
+  const ink   = (await allInk())   || [];
+  const files = (await allFiles()) || [];
+  const inkMap  = new Map(ink.map(r => [r.id, r.strokes || []]));
+  const fileMap = new Map(files.map(r => [r.id, r.data]));
   return {
     format: BACKUP_FORMAT,
     version: 1,
     exportedAt: new Date().toISOString(),
-    docs: docs.map(d => ({ ...d, strokes: inkMap.get(d.id) || [] })),
+    docs: docs.map(d => {
+      const entry = { ...d, strokes: inkMap.get(d.id) || [] };
+      if (d.kind === 'pdf' && fileMap.has(d.id)) entry.pdf = b64FromBuf(fileMap.get(d.id));
+      return entry;
+    }),
   };
 }
 
@@ -1372,11 +1650,14 @@ async function importBackup(file) {
 
     let added = 0, replaced = 0;
     for (const entry of data.docs) {
-      if (!entry || !entry.id || typeof entry.md !== 'string') continue;
-      const { strokes, ...doc } = entry;
+      if (!entry || !entry.id) continue;
+      const isPdf = entry.kind === 'pdf';
+      if (isPdf ? typeof entry.pdf !== 'string' : typeof entry.md !== 'string') continue;
+      const { strokes, pdf, ...doc } = entry;
       const exists = await getDoc(doc.id);
       await putDoc(doc);
       await putInk({ id: doc.id, strokes: Array.isArray(strokes) ? strokes : [] });
+      if (isPdf) await putFile({ id: doc.id, data: bufFromB64(pdf) });
       exists ? replaced++ : added++;
     }
 
@@ -1502,6 +1783,7 @@ el.scroller.addEventListener('scroll', () => {
   if (zooming) return;   // 확대 중 옮겨지는 스크롤엔 반응하지 않습니다 (위 zooming 주석 참고)
   updatePageRect();
   updateTileMounts();
+  updateSlideMounts();
 }, { passive: true });
 
 window.addEventListener('resize', () => {
