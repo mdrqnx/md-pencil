@@ -48,7 +48,7 @@ const HI_COLORS  = ['#ffd84d', '#8ce99a', '#ffa8d2', '#8fd6ff', '#c9b6ff'];
 //
 // 폭은 글자 크기와 묶지 않습니다. 묶어두면 글자를 키울수록 여백이 잡아먹히는데,
 // 그 여백이 바로 필기 공간이라 반대로 움직여야 맞습니다. 각자 정하게 둡니다.
-const FS_STEPS   = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+const FS_STEPS   = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 const FS_DEFAULT = 16;
 const FS_MIN = 6, FS_MAX = 32;      // 옛 문서에 남아 있을 수 있는 값까지 받아줍니다
 
@@ -264,6 +264,20 @@ function setZoom(z) {
   applyZoomVisual(z, sr.left + sr.width / 2, sr.top + sr.height / 2);
   relayout();
   updatePageRect();
+}
+
+// 연속 확대(휠·트랙패드)는 배율만 즉시 바꾸고, 손을 멈춘 뒤에야 해상도를 다시
+// 잡습니다. 핀치의 touchend 와 같은 역할입니다 — 제스처 도중에 buildTiles 를
+// 돌리면 매 이벤트마다 잉크를 통째로 다시 래스터화하느라 끊깁니다.
+// 핀치·휠 확대가 진행 중인 동안엔 켜집니다. 이 사이에 오는 scroll 이벤트는
+// 타일을 다시 붙이지 않고 넘깁니다 — applyZoomVisual 이 scrollLeft 을 옮기면
+// scroll 이 발사되는데, 거기서 updateTileMounts 가 돌면 핀치 매 프레임마다
+// 잉크 canvas 를 새 해상도로 다시 그려 끊깁니다. 손을 떼야 한 번에 잡습니다.
+let zooming = false;
+let settleTimer = 0;
+function scheduleSettle() {
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => { zooming = false; relayout(); updatePageRect(); }, 140);
 }
 
 
@@ -810,6 +824,7 @@ el.scroller.addEventListener('touchmove', e => {
     const d = distOf(f[0], f[1]);
     if (!pinch.moved && Math.abs(d - pinch.d0) > TAP_SLOP) pinch.moved = true;
     if (pinch.moved && pinch.d0 > 0) {
+      zooming = true;
       applyZoomVisual(clamp(pinch.z0 * (d / pinch.d0), ZOOM_MIN, ZOOM_MAX), pinch.cx, pinch.cy);
     }
     return;
@@ -828,6 +843,7 @@ function onTouchEnd(e) {
   if (pinch && fingersOf(e).length < 2) {
     const tapped = !pinch.moved && (performance.now() - pinch.t0) < TAP_MS;
     pinch = null;
+    zooming = false;
     if (tapped) toggleEraser();
     else { relayout(); updatePageRect(); }   // 새 배율에 맞춰 잉크 해상도를 다시 잡습니다
     return;
@@ -1458,7 +1474,32 @@ el.btnZoomIn .addEventListener('click', () => setZoom(state.zoom * 1.15));
 el.btnZoomOut.addEventListener('click', () => setZoom(state.zoom / 1.15));
 el.btnZoomFit.addEventListener('click', () => setZoom(fitZoom()));
 
+// 데스크톱 확대: Ctrl+휠 / 트랙패드 핀치. 안 잡으면 브라우저가 페이지 전체를
+// 확대해버려 잉크 백킹스토어가 흐려지고(state.zoom 은 그대로라) 레이아웃이 끊깁니다.
+// 커서를 붙잡은 채 배율만 바꾸고, 멈추면 scheduleSettle 이 해상도를 다시 잡습니다.
+el.scroller.addEventListener('wheel', e => {
+  if (!state.doc) return;
+  if (!(e.ctrlKey || e.metaKey)) return;   // 확대 제스처가 아니면 네이티브 스크롤에 맡깁니다
+  e.preventDefault();
+  const z = clamp(state.zoom * Math.pow(1.0015, -e.deltaY), ZOOM_MIN, ZOOM_MAX);
+  if (Math.abs(z - state.zoom) < 1e-4) return;
+  zooming = true;
+  applyZoomVisual(z, e.clientX, e.clientY);
+  scheduleSettle();
+}, { passive: false });
+
+// 키보드 확대: Ctrl/Cmd 와 +, -, 0. 입력란에 타이핑 중이면 건드리지 않습니다.
+window.addEventListener('keydown', e => {
+  if (!state.doc || !(e.ctrlKey || e.metaKey)) return;
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (e.key === '=' || e.key === '+') { e.preventDefault(); setZoom(state.zoom * 1.15); }
+  else if (e.key === '-' || e.key === '_') { e.preventDefault(); setZoom(state.zoom / 1.15); }
+  else if (e.key === '0') { e.preventDefault(); setZoom(fitZoom()); }
+});
+
 el.scroller.addEventListener('scroll', () => {
+  if (zooming) return;   // 확대 중 옮겨지는 스크롤엔 반응하지 않습니다 (위 zooming 주석 참고)
   updatePageRect();
   updateTileMounts();
 }, { passive: true });
